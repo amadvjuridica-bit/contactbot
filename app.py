@@ -31,6 +31,9 @@ SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY")
 
 UPLOADS_BUCKET = "contactbot-uploads"
 
+# ADMIN (apenas seu usuário)
+ADMIN_EMAIL = "amadvjuridica@gmail.com"
+
 # =========================
 # Precificação (hardcoded por enquanto; depois colocamos em tabela)
 # =========================
@@ -131,6 +134,11 @@ def do_logout():
         st.session_state.pop(k, None)
     st.rerun()
 
+def is_admin_user() -> bool:
+    user = st.session_state.get("user", {}) or {}
+    email = (user.get("email") or "").strip().lower()
+    return email == ADMIN_EMAIL.lower()
+
 # =========================
 # Auth/Admin (mantido)
 # =========================
@@ -215,9 +223,12 @@ def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp
         "contato_nome": (contato_nome or "").strip() or None,
         "contato_email": (contato_email or "").strip() or None,
         "contato_whatsapp": (contato_whatsapp or "").strip() or None,
-        "plano_tipo": plano_tipo,
+        "plano_tipo": plano_tipo,   # "pos" ou "pre"
         "ativo": True
     }).execute()
+
+def db_update_cliente(cliente_id, payload: dict):
+    return supabase_admin.table("clientes").update(payload).eq("id", cliente_id).execute()
 
 def db_list_remessas(cliente_id=None, limit=100):
     # SUA TABELA TEM A COLUNA "data" (não "data_remessa")
@@ -261,6 +272,33 @@ def db_list_uploads(remessa_id=None, limit=100):
 def db_get_cliente(cliente_id: int):
     return supabase_admin.table("clientes").select("*").eq("id", cliente_id).limit(1).execute()
 
+# ---- Admin tables (config)
+def db_list_remuneracao_parametros():
+    return supabase_admin.table("remuneracao_parametros").select("*").order("codigo").execute()
+
+def db_update_remuneracao_parametro(row_id: int, payload: dict):
+    return supabase_admin.table("remuneracao_parametros").update(payload).eq("id", row_id).execute()
+
+def db_get_email_config():
+    return supabase_admin.table("email_config").select("*").order("created_at", desc=True).limit(1).execute()
+
+def db_upsert_email_config(payload: dict):
+    existing = _resp_data(db_get_email_config())
+    if existing:
+        row_id = existing[0]["id"]
+        return supabase_admin.table("email_config").update(payload).eq("id", row_id).execute()
+    return supabase_admin.table("email_config").insert(payload).execute()
+
+def db_get_mercadopago_config():
+    return supabase_admin.table("mercadopago_config").select("*").order("created_at", desc=True).limit(1).execute()
+
+def db_upsert_mercadopago_config(payload: dict):
+    existing = _resp_data(db_get_mercadopago_config())
+    if existing:
+        row_id = existing[0]["id"]
+        return supabase_admin.table("mercadopago_config").update(payload).eq("id", row_id).execute()
+    return supabase_admin.table("mercadopago_config").insert(payload).execute()
+
 # =========================
 # Storage helpers
 # =========================
@@ -289,13 +327,11 @@ def fetch_bytes_from_signed_url(url: str) -> bytes:
 # Parse Envios CSV -> métricas
 # =========================
 def infer_status_column(headers: list[str]) -> str | None:
-    # tenta achar coluna de status
     candidates = ["status", "situacao", "estado", "resultado", "delivery_status"]
     lowered = {h.lower(): h for h in headers}
     for c in candidates:
         if c in lowered:
             return lowered[c]
-    # fallback: tenta por contains
     for h in headers:
         if "status" in h.lower():
             return h
@@ -329,7 +365,6 @@ def compute_envios_metrics(csv_bytes: bytes):
             elif status in BILLABLE_STATUSES:
                 counts["billable"] += 1
             else:
-                # status desconhecido: por segurança NÃO cobra
                 pass
 
     return counts
@@ -376,14 +411,109 @@ if session_is_logged_in():
 
     st.divider()
 
-    # MENU APROVADO
-    tabs = st.tabs(["Dashboard", "Uploads (CSV)", "Campanhas (Remessas)", "Relatórios", "Remuneração"])
+    # MENU APROVADO (+ Configurações Admin só para você)
+    base_tabs = ["Dashboard", "Uploads (CSV)", "Campanhas (Remessas)", "Relatórios", "Remuneração"]
+    if is_admin_user():
+        base_tabs.append("Configurações (Admin)")
+    tabs = st.tabs(base_tabs)
 
     # -------------------------
     # Dashboard (simples por enquanto)
     # -------------------------
     with tabs[0]:
         st.info("Dashboard será preenchido com KPIs depois que Remuneração + Relatórios estiverem consolidados.")
+
+    # -------------------------
+    # Uploads (CSV)
+    # -------------------------
+    with tabs[1]:
+        st.write("### Uploads (CSV)")
+        st.caption("Você sobe os retornos: Envios e Botões. O app vincula na remessa e atualiza o status (parcial/completa).")
+
+        clientes_resp = db_list_clientes()
+        clientes = _resp_data(clientes_resp)
+
+        if not clientes:
+            if is_admin_user():
+                st.warning("Nenhum cliente cadastrado. Vá em **Configurações (Admin) → Clientes** e cadastre o primeiro.")
+            else:
+                st.warning("Nenhum cliente cadastrado. Peça ao administrador cadastrar.")
+        else:
+            map_label_to_cliente = {f'{c["razao_social"]} ({c["slug"]})': c for c in clientes}
+            cliente_label = st.selectbox("Cliente do upload", list(map_label_to_cliente.keys()), key="up_cli")
+            cliente = map_label_to_cliente[cliente_label]
+
+            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=100)
+            rems = _resp_data(rem_resp)
+
+            if not rems:
+                st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
+            else:
+                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems}
+                rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem")
+                rem = map_label_to_rem[rem_label]
+
+                file_tipo = st.selectbox("Tipo do arquivo", ["envios", "botoes", "base"], index=0)
+                uploaded = st.file_uploader("Envie um CSV", type=["csv"])
+
+                if uploaded:
+                    data = uploaded.getvalue()
+                    file_name = uploaded.name
+                    size_bytes = len(data)
+                    digest = sha256_hex(data)
+
+                    st.caption(f"Arquivo: **{file_name}** | {size_bytes} bytes | SHA256 `{digest[:16]}...`")
+
+                    try:
+                        headers, rows = parse_csv_preview(data, max_rows=30)
+                        st.write("Colunas detectadas:", headers or "(sem cabeçalho)")
+                        if rows:
+                            st.dataframe(rows, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Preview falhou: {e}")
+
+                    if st.button("Salvar CSV (Storage + Registro)", type="primary", use_container_width=True):
+                        try:
+                            path = make_storage_path(cliente["slug"], rem["remessa_key"], file_tipo, file_name)
+                            storage_upload_csv(UPLOADS_BUCKET, path, data)
+
+                            db_insert_upload_record(
+                                user_id=user_id,
+                                user_email=user_email,
+                                file_name=file_name,
+                                bucket=UPLOADS_BUCKET,
+                                path=path,
+                                size_bytes=size_bytes,
+                                sha256=digest,
+                                remessa_id=rem["id"],
+                                file_tipo=file_tipo
+                            )
+
+                            up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
+                            ups = _resp_data(up_resp)
+                            status = remessa_status_from_uploads(ups)
+                            db_update_remessa_status(rem["id"], status)
+
+                            st.success(f"✅ Upload salvo! Status da remessa: {status}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Falha ao salvar: {e}")
+
+                st.divider()
+                st.write("#### Uploads desta remessa")
+                up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
+                ups = _resp_data(up_resp)
+
+                if not ups:
+                    st.info("Nenhum upload nesta remessa ainda.")
+                else:
+                    st.dataframe([{
+                        "created_at": u.get("created_at"),
+                        "tipo": u.get("file_tipo"),
+                        "file_name": u.get("file_name"),
+                        "size_bytes": u.get("size_bytes"),
+                        "storage_path": u.get("storage_path"),
+                    } for u in ups], use_container_width=True)
 
     # -------------------------
     # Campanhas (Remessas)
@@ -395,7 +525,10 @@ if session_is_logged_in():
         clientes = _resp_data(clientes_resp)
 
         if not clientes:
-            st.warning("Cadastre clientes primeiro (aba Uploads/CSV ou via tabela).")
+            if is_admin_user():
+                st.warning("Cadastre clientes primeiro em **Configurações (Admin) → Clientes**.")
+            else:
+                st.warning("Cadastre clientes primeiro (admin).")
         else:
             map_label_to_cliente = {f'{c["razao_social"]} ({c["slug"]})': c for c in clientes}
             cliente_label = st.selectbox("Cliente", list(map_label_to_cliente.keys()), key="rem_cli")
@@ -437,101 +570,10 @@ if session_is_logged_in():
                 } for r in rems], use_container_width=True)
 
     # -------------------------
-    # Uploads (CSV)
-    # -------------------------
-    with tabs[1]:
-        st.write("### Uploads (CSV)")
-        st.caption("Você sobe os retornos: Envios e Botões. O app vincula na remessa e atualiza o status (parcial/completa).")
-
-        clientes_resp = db_list_clientes()
-        clientes = _resp_data(clientes_resp)
-
-        if not clientes:
-            st.warning("Cadastre clientes primeiro.")
-        else:
-            map_label_to_cliente = {f'{c["razao_social"]} ({c["slug"]})': c for c in clientes}
-            cliente_label = st.selectbox("Cliente do upload", list(map_label_to_cliente.keys()), key="up_cli")
-            cliente = map_label_to_cliente[cliente_label]
-
-            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=100)
-            rems = _resp_data(rem_resp)
-
-            if not rems:
-                st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
-            else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems}
-                rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem")
-                rem = map_label_to_rem[rem_label]
-
-                file_tipo = st.selectbox("Tipo do arquivo", ["envios", "botoes", "base"], index=0)
-
-                uploaded = st.file_uploader("Envie um CSV", type=["csv"])
-
-                if uploaded:
-                    data = uploaded.getvalue()
-                    file_name = uploaded.name
-                    size_bytes = len(data)
-                    digest = sha256_hex(data)
-
-                    st.caption(f"Arquivo: **{file_name}** | {size_bytes} bytes | SHA256 `{digest[:16]}...`")
-
-                    try:
-                        headers, rows = parse_csv_preview(data, max_rows=30)
-                        st.write("Colunas detectadas:", headers or "(sem cabeçalho)")
-                        if rows:
-                            st.dataframe(rows, use_container_width=True)
-                    except Exception as e:
-                        st.warning(f"Preview falhou: {e}")
-
-                    if st.button("Salvar CSV (Storage + Registro)", type="primary", use_container_width=True):
-                        try:
-                            path = make_storage_path(cliente["slug"], rem["remessa_key"], file_tipo, file_name)
-                            storage_upload_csv(UPLOADS_BUCKET, path, data)
-
-                            db_insert_upload_record(
-                                user_id=user_id,
-                                user_email=user_email,
-                                file_name=file_name,
-                                bucket=UPLOADS_BUCKET,
-                                path=path,
-                                size_bytes=size_bytes,
-                                sha256=digest,
-                                remessa_id=rem["id"],
-                                file_tipo=file_tipo
-                            )
-
-                            # Atualiza status da remessa com base nos tipos existentes
-                            up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
-                            ups = _resp_data(up_resp)
-                            status = remessa_status_from_uploads(ups)
-                            db_update_remessa_status(rem["id"], status)
-
-                            st.success(f"✅ Upload salvo! Status da remessa: {status}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Falha ao salvar: {e}")
-
-                st.divider()
-                st.write("#### Uploads desta remessa")
-                up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
-                ups = _resp_data(up_resp)
-
-                if not ups:
-                    st.info("Nenhum upload nesta remessa ainda.")
-                else:
-                    st.dataframe([{
-                        "created_at": u.get("created_at"),
-                        "tipo": u.get("file_tipo"),
-                        "file_name": u.get("file_name"),
-                        "size_bytes": u.get("size_bytes"),
-                        "storage_path": u.get("storage_path"),
-                    } for u in ups], use_container_width=True)
-
-    # -------------------------
     # Relatórios (próximo passo)
     # -------------------------
     with tabs[3]:
-        st.info("Relatórios (sintético + analítico + PDF) será o próximo passo após Remuneração estar fechada por remessa.")
+        st.info("Relatórios (sintético + analítico + PDF) será o próximo passo após Remuneração estar fechada por remessa e o fluxo de e-mail configurado.")
 
     # -------------------------
     # Remuneração (AGORA)
@@ -543,14 +585,16 @@ if session_is_logged_in():
         clientes_resp = db_list_clientes()
         clientes = _resp_data(clientes_resp)
         if not clientes:
-            st.warning("Cadastre clientes primeiro.")
+            if is_admin_user():
+                st.warning("Cadastre o primeiro cliente em **Configurações (Admin) → Clientes**.")
+            else:
+                st.warning("Cadastre clientes primeiro (admin).")
         else:
             map_label_to_cliente = {f'{c["razao_social"]} ({c["slug"]})': c for c in clientes}
             cliente_label = st.selectbox("Cliente", list(map_label_to_cliente.keys()), key="pay_cli")
             cliente = map_label_to_cliente[cliente_label]
             plano_tipo = cliente.get("plano_tipo", "pos")
 
-            # Mês de fechamento (pós-pago): consolidar por mês
             today = date.today()
             colm1, colm2 = st.columns(2)
             with colm1:
@@ -558,11 +602,9 @@ if session_is_logged_in():
             with colm2:
                 month = st.number_input("Mês", min_value=1, max_value=12, value=today.month, step=1, key="pay_month")
 
-            # Lista remessas do cliente e filtra pelo mês/ano selecionado
             rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=300)
             rems = _resp_data(rem_resp)
 
-            # data na tabela é string "YYYY-MM-DD"
             def in_month(r):
                 try:
                     d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
@@ -575,19 +617,14 @@ if session_is_logged_in():
             st.write(f"Plano do cliente: **{plano_tipo.upper()}**")
             st.divider()
 
-            # =========
-            # Por remessa
-            # =========
             st.write("#### Por remessa (detalhado)")
             if not rems_month:
                 st.info("Nenhuma remessa neste mês para este cliente.")
             else:
-                # Escolhe uma remessa para detalhar
                 map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems_month}
                 rem_label = st.selectbox("Escolha uma remessa para detalhar", list(map_label_to_rem.keys()), key="pay_rem")
                 rem = map_label_to_rem[rem_label]
 
-                # Buscar upload do tipo envios
                 up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
                 ups = _resp_data(up_resp)
                 envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
@@ -595,11 +632,9 @@ if session_is_logged_in():
                 if not envios_files:
                     st.warning("Esta remessa ainda não tem CSV de **envios**. Faça upload em Uploads (CSV).")
                 else:
-                    # pega o mais recente
                     envios_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
                     env_u = envios_files[0]
 
-                    # baixa bytes
                     url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
                     if not url:
                         st.error("Não consegui gerar link assinado para baixar o CSV de envios.")
@@ -633,7 +668,6 @@ if session_is_logged_in():
                             else:
                                 st.info("Não encontrei valores de status (ou coluna de status não foi detectada).")
 
-                            # Incentivo para próxima faixa
                             nxt = next_tier(plano_tipo, qty_billable)
                             if nxt:
                                 a, b, p = nxt
@@ -652,9 +686,6 @@ if session_is_logged_in():
 
             st.divider()
 
-            # =========
-            # Consolidado mensal (pós-pago)
-            # =========
             st.write("#### Consolidado mensal do cliente")
             if not rems_month:
                 st.info("Nada para consolidar.")
@@ -725,6 +756,220 @@ if session_is_logged_in():
 
                 if plano_tipo == "pre":
                     st.info("Pré-pago: no próximo passo entraremos com SALDO, validade de 30 dias, bloqueio ao zerar e recarga (PIX depois).")
+
+    # -------------------------
+    # Configurações (Admin) — só para você
+    # -------------------------
+    if is_admin_user():
+        with tabs[5]:
+            st.write("### Configurações (Admin)")
+            st.caption("Apenas o administrador pode ver esta área. Aqui ficam: clientes, valores (R$), e-mail e PIX.")
+
+            sec = st.tabs(["Clientes", "Valores (Remuneração)", "E-mail (SMTP)", "PIX (Mercado Pago)"])
+
+            # ---- Clientes
+            with sec[0]:
+                st.write("#### Cadastrar/gerenciar clientes")
+
+                clientes_resp = db_list_clientes()
+                clientes = _resp_data(clientes_resp)
+
+                with st.expander("➕ Cadastrar novo cliente", expanded=True):
+                    cnpj = st.text_input("CNPJ (somente números ou com máscara)", value="", key="adm_cnpj")
+                    razao = st.text_input("Razão social", value="", key="adm_razao")
+                    contato_nome = st.text_input("Contato (nome)", value="", key="adm_contato_nome")
+                    contato_email = st.text_input("Contato (e-mail)", value="", key="adm_contato_email")
+                    contato_whatsapp = st.text_input("Contato (WhatsApp)", value="", key="adm_contato_whats")
+
+                    plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0, key="adm_plano")
+                    plano_tipo = "pos" if plano_label == "Pós-pago" else "pre"
+
+                    st.caption("Obs: o slug é gerado automaticamente a partir da Razão Social (padronizado).")
+
+                    if st.button("Salvar cliente", type="primary", use_container_width=True):
+                        try:
+                            if not (cnpj or "").strip():
+                                st.warning("Informe o CNPJ.")
+                                st.stop()
+                            if not (razao or "").strip():
+                                st.warning("Informe a Razão Social.")
+                                st.stop()
+
+                            db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo)
+                            st.success("✅ Cliente cadastrado.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao cadastrar cliente: {e}")
+
+                st.divider()
+                st.write("#### Clientes cadastrados")
+
+                if not clientes:
+                    st.info("Nenhum cliente cadastrado ainda.")
+                else:
+                    # seleção p/ edição
+                    map_label = {f'{c["razao_social"]} ({c["slug"]}) [id {c["id"]}]': c for c in clientes}
+                    sel = st.selectbox("Selecionar cliente para editar", list(map_label.keys()), key="adm_cli_edit")
+                    c = map_label[sel]
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        e_razao = st.text_input("Razão social", value=c.get("razao_social") or "", key="adm_e_razao")
+                        e_contato_nome = st.text_input("Contato (nome)", value=c.get("contato_nome") or "", key="adm_e_nome")
+                        e_contato_email = st.text_input("Contato (e-mail)", value=c.get("contato_email") or "", key="adm_e_email")
+                    with col2:
+                        e_cnpj = st.text_input("CNPJ", value=c.get("cnpj") or "", key="adm_e_cnpj")
+                        e_contato_whats = st.text_input("Contato (WhatsApp)", value=c.get("contato_whatsapp") or "", key="adm_e_whats")
+                        plano_atual = "Pós-pago" if (c.get("plano_tipo") == "pos") else "Pré-pago"
+                        e_plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0 if plano_atual == "Pós-pago" else 1, key="adm_e_plano")
+                        e_plano_tipo = "pos" if e_plano_label == "Pós-pago" else "pre"
+
+                    e_ativo = st.checkbox("Ativo", value=bool(c.get("ativo", True)), key="adm_e_ativo")
+                    st.caption("Slug não é editável aqui (para não quebrar histórico).")
+
+                    if st.button("Atualizar cliente", use_container_width=True):
+                        try:
+                            payload = {
+                                "cnpj": (e_cnpj or "").strip() or None,
+                                "razao_social": (e_razao or "").strip() or None,
+                                "contato_nome": (e_contato_nome or "").strip() or None,
+                                "contato_email": (e_contato_email or "").strip() or None,
+                                "contato_whatsapp": (e_contato_whats or "").strip() or None,
+                                "plano_tipo": e_plano_tipo,
+                                "ativo": bool(e_ativo),
+                            }
+                            db_update_cliente(c["id"], payload)
+                            st.success("✅ Cliente atualizado.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar cliente: {e}")
+
+                    st.divider()
+                    st.dataframe(
+                        [{
+                            "id": x.get("id"),
+                            "cnpj": x.get("cnpj"),
+                            "razao_social": x.get("razao_social"),
+                            "slug": x.get("slug"),
+                            "plano_tipo": x.get("plano_tipo"),
+                            "ativo": x.get("ativo"),
+                        } for x in clientes],
+                        use_container_width=True
+                    )
+
+            # ---- Valores remuneração (tabela)
+            with sec[1]:
+                st.write("#### Valores (Remuneração) — editar só R$")
+                st.caption("Esses valores ficam na tabela e podem mudar. O cálculo ainda está no hardcoded; no próximo passo vamos ligar isso aqui no cálculo.")
+
+                try:
+                    resp = db_list_remuneracao_parametros()
+                    rows = _resp_data(resp) or []
+                except Exception as e:
+                    st.error(f"Não consegui ler remuneracao_parametros: {e}")
+                    rows = []
+
+                if not rows:
+                    st.info("Tabela vazia ou não existe. (Confirme se você rodou o SQL de criação das tabelas.)")
+                else:
+                    # Lista simples e editor por linha
+                    for r in rows:
+                        with st.expander(f'{r.get("codigo")} — {r.get("descricao")}', expanded=False):
+                            colA, colB, colC = st.columns([2, 1, 1])
+                            with colA:
+                                desc = st.text_input("Descrição", value=r.get("descricao") or "", key=f"rp_desc_{r['id']}")
+                                unidade = st.text_input("Unidade", value=r.get("unidade") or "un", key=f"rp_un_{r['id']}")
+                            with colB:
+                                qtd_fixa = st.number_input("Quantidade fixa (travada no app depois)", value=float(r.get("quantidade_fixa") or 0), step=1.0, key=f"rp_q_{r['id']}")
+                            with colC:
+                                valor_unit = st.number_input("Valor unitário (R$)", value=float(r.get("valor_unitario") or 0), step=0.01, key=f"rp_v_{r['id']}")
+
+                            ativo = st.checkbox("Ativo", value=bool(r.get("ativo", True)), key=f"rp_a_{r['id']}")
+
+                            if st.button("Salvar", key=f"rp_save_{r['id']}", use_container_width=True):
+                                try:
+                                    db_update_remuneracao_parametro(r["id"], {
+                                        "descricao": desc,
+                                        "unidade": unidade,
+                                        "quantidade_fixa": qtd_fixa,
+                                        "valor_unitario": valor_unit,
+                                        "ativo": bool(ativo),
+                                    })
+                                    st.success("✅ Salvo.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao salvar: {e}")
+
+            # ---- E-mail config
+            with sec[2]:
+                st.write("#### E-mail (SMTP) — envio automático para clientes")
+                st.caption("Preencha aqui. No próximo passo vamos gerar o e-mail e enviar automaticamente com base nos relatórios.")
+
+                existing = _resp_data(db_get_email_config())
+                row = existing[0] if existing else {}
+
+                is_active = st.checkbox("Ativar envio por e-mail", value=bool(row.get("is_active", False)), key="em_active")
+                smtp_host = st.text_input("SMTP Host", value=row.get("smtp_host") or "", key="em_host")
+                smtp_port = st.number_input("SMTP Port", value=int(row.get("smtp_port") or 587), step=1, key="em_port")
+                smtp_user = st.text_input("SMTP User", value=row.get("smtp_user") or "", key="em_user")
+                smtp_pass = st.text_input("SMTP Pass", value=row.get("smtp_pass") or "", type="password", key="em_pass")
+                smtp_tls = st.checkbox("TLS", value=bool(row.get("smtp_tls", True)), key="em_tls")
+
+                from_name = st.text_input("From Name", value=row.get("from_name") or "ContactBot", key="em_from_name")
+                from_email = st.text_input("From E-mail", value=row.get("from_email") or "", key="em_from_email")
+
+                template_assunto = st.text_input("Template Assunto", value=row.get("template_assunto") or "Relatório ContactBot — {cliente} — {mes}/{ano}", key="em_subj")
+                template_corpo = st.text_area(
+                    "Template Corpo (texto/HTML simples)",
+                    value=row.get("template_corpo") or "Olá, segue o relatório da remessa {remessa_key}.\n\nAtt,\nContactBot",
+                    height=180,
+                    key="em_body"
+                )
+
+                if st.button("Salvar configurações de e-mail", use_container_width=True):
+                    try:
+                        db_upsert_email_config({
+                            "is_active": bool(is_active),
+                            "smtp_host": (smtp_host or "").strip() or None,
+                            "smtp_port": int(smtp_port),
+                            "smtp_user": (smtp_user or "").strip() or None,
+                            "smtp_pass": (smtp_pass or "").strip() or None,
+                            "smtp_tls": bool(smtp_tls),
+                            "from_name": (from_name or "").strip() or None,
+                            "from_email": (from_email or "").strip() or None,
+                            "template_assunto": (template_assunto or "").strip() or None,
+                            "template_corpo": (template_corpo or "").strip() or None,
+                        })
+                        st.success("✅ Config de e-mail salva.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar config de e-mail: {e}")
+
+            # ---- Mercado Pago config
+            with sec[3]:
+                st.write("#### PIX (Mercado Pago)")
+                st.caption("Aqui ficam as chaves e webhook. No próximo passo vamos criar a rotina de gerar PIX de recarga no pré-pago.")
+
+                existing = _resp_data(db_get_mercadopago_config())
+                row = existing[0] if existing else {}
+
+                mp_active = st.checkbox("Ativar integração Mercado Pago", value=bool(row.get("is_active", False)), key="mp_active")
+                access_token = st.text_input("Access Token", value=row.get("access_token") or "", type="password", key="mp_token")
+                public_key = st.text_input("Public Key", value=row.get("public_key") or "", key="mp_pub")
+                webhook_secret = st.text_input("Webhook Secret", value=row.get("webhook_secret") or "", type="password", key="mp_webhook")
+
+                if st.button("Salvar configurações Mercado Pago", use_container_width=True):
+                    try:
+                        db_upsert_mercadopago_config({
+                            "is_active": bool(mp_active),
+                            "access_token": (access_token or "").strip() or None,
+                            "public_key": (public_key or "").strip() or None,
+                            "webhook_secret": (webhook_secret or "").strip() or None,
+                        })
+                        st.success("✅ Config Mercado Pago salva.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar config Mercado Pago: {e}")
 
     st.stop()
 
