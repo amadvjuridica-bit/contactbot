@@ -1,4 +1,9 @@
 import os
+import io
+import csv
+import hashlib
+from datetime import datetime, timezone
+
 import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -26,6 +31,9 @@ def get_secret(name: str, default: str = "") -> str:
 SUPABASE_URL = get_secret("SUPABASE_URL")
 SUPABASE_ANON_KEY = get_secret("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY")
+
+# Bucket onde vamos guardar CSVs
+UPLOADS_BUCKET = "contactbot-uploads"
 
 def _mask(s: str, show: int = 6) -> str:
     if not s:
@@ -77,11 +85,9 @@ def session_set_from_auth_response(resp):
     if not session or not user:
         return False
 
-    # session pode ser objeto (Session) ou dict dependendo da versão/uso
     access_token = getattr(session, "access_token", None) or (session.get("access_token") if isinstance(session, dict) else None)
     refresh_token = getattr(session, "refresh_token", None) or (session.get("refresh_token") if isinstance(session, dict) else None)
 
-    # user pode ser objeto (User) ou dict
     user_email = getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None)
     user_id = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None)
 
@@ -94,13 +100,11 @@ def session_set_from_auth_response(resp):
     return True
 
 def do_logout():
-    # Tenta sign_out (não é obrigatório, mas é bom)
     try:
         supabase_public.auth.sign_out()
     except Exception:
         pass
 
-    # Limpa sessão local do Streamlit
     for k in ["access_token", "refresh_token", "user"]:
         if k in st.session_state:
             del st.session_state[k]
@@ -111,20 +115,15 @@ def do_logout():
 # Helpers (ADMIN / AUTH)
 # =========================
 def admin_find_user_by_email(email: str):
-    """
-    Procura usuário por email via admin list_users (paginação simples).
-    Retorna dict do usuário ou None.
-    """
     email = (email or "").strip().lower()
     if not email:
         return None
 
     page = 1
     per_page = 200
-    for _ in range(20):  # 20 * 200 = 4000 usuários
+    for _ in range(20):  # 4000 usuários
         resp = supabase_admin.auth.admin.list_users(page=page, per_page=per_page)
 
-        # resp pode ser objeto com .users, ou dict com "users"
         users = getattr(resp, "users", None)
         if users is None and isinstance(resp, dict):
             users = resp.get("users", [])
@@ -133,10 +132,10 @@ def admin_find_user_by_email(email: str):
             return None
 
         for u in users:
-            # u pode ser dict
             u_email = (u.get("email") or "").strip().lower()
             if u_email == email:
                 return u
+
         page += 1
 
     return None
@@ -145,11 +144,7 @@ def admin_create_user(email: str, password: str):
     email = email.strip()
     password = password.strip()
     return supabase_admin.auth.admin.create_user(
-        {
-            "email": email,
-            "password": password,
-            "email_confirm": True,   # cria já confirmado (sem e-mail)
-        }
+        {"email": email, "password": password, "email_confirm": True}
     )
 
 def admin_set_password(email: str, new_password: str):
@@ -167,6 +162,71 @@ def do_login(email: str, password: str):
     return supabase_public.auth.sign_in_with_password({"email": email, "password": password})
 
 # =========================
+# Upload CSV helpers
+# =========================
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+def make_storage_path(user_email: str, original_name: str) -> str:
+    safe_email = (user_email or "unknown").replace("@", "_at_").replace(".", "_")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{safe_email}/{ts}__{original_name}"
+
+def parse_csv_preview(data: bytes, max_rows: int = 30):
+    """
+    Tenta ler as primeiras linhas do CSV e devolve:
+    - headers
+    - rows (lista de dicts)
+    """
+    text = data.decode("utf-8", errors="replace")
+    f = io.StringIO(text)
+    reader = csv.DictReader(f)
+    headers = reader.fieldnames or []
+    rows = []
+    for i, row in enumerate(reader):
+        rows.append(row)
+        if i + 1 >= max_rows:
+            break
+    return headers, rows
+
+def storage_upload_csv(bucket: str, path: str, data: bytes):
+    """
+    Sobe bytes para o Supabase Storage (via service role).
+    """
+    # supabase-py v2: upload(path, file, file_options={...})
+    return supabase_admin.storage.from_(bucket).upload(
+        path,
+        data,
+        file_options={"content-type": "text/csv", "upsert": False},
+    )
+
+def storage_signed_url(bucket: str, path: str, expires_in: int = 3600) -> str:
+    """
+    Cria link assinado (private bucket).
+    """
+    resp = supabase_admin.storage.from_(bucket).create_signed_url(path, expires_in)
+    if isinstance(resp, dict) and "signedURL" in resp:
+        return resp["signedURL"]
+    # algumas versões retornam {"data": {"signedUrl": "..."}}
+    if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
+        return resp["data"].get("signedUrl") or resp["data"].get("signedURL") or ""
+    return ""
+
+def db_insert_upload_record(user_id: str, user_email: str, file_name: str, bucket: str, path: str, size_bytes: int, sha256: str):
+    return supabase_admin.table("uploads").insert({
+        "user_id": user_id,
+        "user_email": user_email,
+        "file_name": file_name,
+        "storage_bucket": bucket,
+        "storage_path": path,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+    }).execute()
+
+def db_list_uploads(limit: int = 50):
+    return supabase_admin.table("uploads").select("*").order("created_at", desc=True).limit(limit).execute()
+
+# =========================
 # UI
 # =========================
 st.title("🔐 ContactBot — Login")
@@ -175,6 +235,7 @@ with st.expander("Diagnóstico rápido (config)"):
     st.write("SUPABASE_URL:", SUPABASE_URL)
     st.write("SUPABASE_ANON_KEY:", _mask(SUPABASE_ANON_KEY))
     st.write("SUPABASE_SERVICE_ROLE_KEY:", _mask(SUPABASE_SERVICE_ROLE_KEY))
+    st.write("UPLOADS_BUCKET:", UPLOADS_BUCKET)
 
 # =========================
 # PAINEL (página única) — aparece só quando logado
@@ -184,7 +245,6 @@ if session_is_logged_in():
     user_email = user.get("email", "")
     user_id = user.get("id", "")
 
-    # Topbar simples
     top_l, top_r = st.columns([4, 1])
     with top_l:
         st.subheader("✅ Painel (logado)")
@@ -195,18 +255,102 @@ if session_is_logged_in():
 
     st.divider()
 
-    tabs = st.tabs(["Dashboard", "Uploads", "Envios", "Relatórios"])
+    tabs = st.tabs(["Dashboard", "Uploads (CSV)", "Envios", "Relatórios"])
 
     with tabs[0]:
         st.write("📌 **Dashboard** (placeholder)")
         st.info("Aqui vai entrar o resumo executivo e os KPIs.")
 
     with tabs[1]:
-        st.write("📤 **Uploads** (placeholder)")
-        uploaded = st.file_uploader("Envie um arquivo (CSV/Excel)", type=["csv", "xlsx", "xls"])
+        st.write("📤 **Uploads de CSV**")
+
+        uploaded = st.file_uploader("Envie um CSV", type=["csv"])
         if uploaded:
-            st.success(f"Arquivo recebido: {uploaded.name} ({uploaded.size} bytes)")
-            st.caption("Depois vamos: validar colunas → salvar no Supabase Storage → registrar no banco.")
+            data = uploaded.getvalue()
+            file_name = uploaded.name
+            size_bytes = len(data)
+            digest = sha256_hex(data)
+
+            st.caption(f"Arquivo: **{file_name}** | Tamanho: **{size_bytes} bytes** | SHA256: `{digest[:16]}...`")
+
+            # Preview
+            try:
+                headers, rows = parse_csv_preview(data, max_rows=30)
+                if not headers:
+                    st.warning("Não encontrei cabeçalho (primeira linha). Mesmo assim dá pra salvar.")
+                else:
+                    st.success(f"Colunas detectadas: {len(headers)}")
+                    st.dataframe(rows, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Não consegui gerar preview do CSV: {e}")
+
+            st.divider()
+
+            if st.button("Salvar este CSV no Supabase", type="primary", use_container_width=True):
+                try:
+                    path = make_storage_path(user_email, file_name)
+
+                    # 1) Upload no Storage
+                    storage_upload_csv(UPLOADS_BUCKET, path, data)
+
+                    # 2) Registro no banco
+                    db_insert_upload_record(
+                        user_id=user_id,
+                        user_email=user_email,
+                        file_name=file_name,
+                        bucket=UPLOADS_BUCKET,
+                        path=path,
+                        size_bytes=size_bytes,
+                        sha256=digest,
+                    )
+
+                    st.success("✅ CSV salvo no Storage e registrado na tabela uploads!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Falha ao salvar no Supabase: {e}")
+
+        st.divider()
+        st.subheader("Últimos uploads")
+
+        try:
+            resp = db_list_uploads(limit=50)
+            rows = []
+            if hasattr(resp, "data"):
+                rows = resp.data or []
+            elif isinstance(resp, dict):
+                rows = resp.get("data", []) or []
+
+            if not rows:
+                st.info("Nenhum upload registrado ainda.")
+            else:
+                # Tabela simples
+                st.dataframe(
+                    [{
+                        "created_at": r.get("created_at"),
+                        "user_email": r.get("user_email"),
+                        "file_name": r.get("file_name"),
+                        "size_bytes": r.get("size_bytes"),
+                        "storage_path": r.get("storage_path"),
+                    } for r in rows],
+                    use_container_width=True
+                )
+
+                st.caption("Baixar: selecione um item abaixo (link assinado de 1h).")
+                options = {f'{r.get("created_at")} | {r.get("file_name")}': r for r in rows}
+                choice = st.selectbox("Escolha um upload para baixar", list(options.keys()))
+                chosen = options[choice]
+
+                if st.button("Gerar link de download (1 hora)", use_container_width=True):
+                    url = storage_signed_url(UPLOADS_BUCKET, chosen.get("storage_path"), expires_in=3600)
+                    if not url:
+                        st.error("Não consegui gerar o link assinado.")
+                    else:
+                        st.success("Link gerado ✅")
+                        st.code(url)  # link aparece aqui
+
+        except Exception as e:
+            st.error(f"Erro ao listar uploads: {e}")
 
     with tabs[2]:
         st.write("📨 **Envios** (placeholder)")
@@ -232,7 +376,6 @@ with col_left:
     if st.button("Entrar", type="primary", use_container_width=True):
         try:
             resp = do_login(login_email, login_pass)
-
             ok = session_set_from_auth_response(resp)
             if ok:
                 st.success("✅ Login OK!")
