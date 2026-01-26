@@ -8,21 +8,32 @@ from supabase import create_client, Client
 # =========================
 st.set_page_config(page_title="ContactBot — Login", layout="wide")
 
+# Carrega .env (funciona LOCAL). No Streamlit Cloud, o certo é st.secrets.
 load_dotenv()
 
-# Lê do .env (local) e também do st.secrets (Streamlit Cloud)
-def _get_secret(key: str) -> str:
-    v = os.getenv(key, "").strip()
-    if v:
-        return v
-    try:
-        return str(st.secrets.get(key, "")).strip()
-    except Exception:
-        return ""
+def get_setting(key: str, default: str = "") -> str:
+    """
+    Ordem de prioridade:
+    1) Variável de ambiente do sistema (os.environ)
+    2) Streamlit Secrets (st.secrets)
+    3) .env carregado via load_dotenv (já cai no os.getenv)
+    """
+    v = os.getenv(key)
+    if v is not None and str(v).strip() != "":
+        return str(v).strip()
 
-SUPABASE_URL = _get_secret("SUPABASE_URL")
-SUPABASE_ANON_KEY = _get_secret("SUPABASE_ANON_KEY")
-SUPABASE_SERVICE_ROLE_KEY = _get_secret("SUPABASE_SERVICE_ROLE_KEY")
+    try:
+        # st.secrets pode existir no Cloud
+        if key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+
+    return default
+
+SUPABASE_URL = get_setting("SUPABASE_URL", "").strip()
+SUPABASE_ANON_KEY = get_setting("SUPABASE_ANON_KEY", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = get_setting("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 def _mask(s: str, show: int = 6) -> str:
     if not s:
@@ -41,9 +52,9 @@ def ensure_env_or_stop():
         missing.append("SUPABASE_SERVICE_ROLE_KEY")
 
     if missing:
-        st.error(f"Faltando: {', '.join(missing)}")
+        st.error(f"Faltando configuração: {', '.join(missing)}")
         st.info(
-            "Local: crie um arquivo .env na mesma pasta do app.py e reinicie o Streamlit.\n\n"
+            "Local: crie um arquivo .env na mesma pasta do app.py.\n"
             "Streamlit Cloud: vá em Manage app → Settings → Secrets e coloque as chaves lá."
         )
         st.stop()
@@ -61,30 +72,6 @@ def get_clients() -> tuple[Client, Client]:
 supabase_public, supabase_admin = get_clients()
 
 # =========================
-# Session helpers
-# =========================
-def is_logged_in() -> bool:
-    return bool(st.session_state.get("auth_user")) and bool(st.session_state.get("auth_session"))
-
-def set_auth_state(user: dict, session: dict):
-    st.session_state["auth_user"] = user
-    st.session_state["auth_session"] = session
-
-def clear_auth_state():
-    st.session_state.pop("auth_user", None)
-    st.session_state.pop("auth_session", None)
-
-def do_logout():
-    # tenta invalidar no supabase também
-    try:
-        supabase_public.auth.sign_out()
-    except Exception:
-        pass
-    clear_auth_state()
-    st.success("✅ Você saiu da conta.")
-    st.rerun()
-
-# =========================
 # Helpers
 # =========================
 def admin_find_user_by_email(email: str):
@@ -98,10 +85,9 @@ def admin_find_user_by_email(email: str):
 
     page = 1
     per_page = 200
-    # varre até achar ou até um limite razoável
     for _ in range(20):  # 20 * 200 = 4000 usuários
         resp = supabase_admin.auth.admin.list_users(page=page, per_page=per_page)
-        users = getattr(resp, "users", None) or resp.get("users", []) if isinstance(resp, dict) else []
+        users = getattr(resp, "users", None) or (resp.get("users", []) if isinstance(resp, dict) else [])
         if not users:
             return None
         for u in users:
@@ -136,47 +122,25 @@ def do_login(email: str, password: str):
     password = password.strip()
     return supabase_public.auth.sign_in_with_password({"email": email, "password": password})
 
+def _pick(obj, key: str):
+    """Pega chave tanto de dict quanto de objeto com atributo."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
 # =========================
 # UI
 # =========================
 st.title("🔐 ContactBot — Login")
 
-with st.expander("Diagnóstico rápido (.env / secrets)"):
+with st.expander("Diagnóstico rápido (config)"):
     st.write("SUPABASE_URL:", SUPABASE_URL)
     st.write("SUPABASE_ANON_KEY:", _mask(SUPABASE_ANON_KEY))
     st.write("SUPABASE_SERVICE_ROLE_KEY:", _mask(SUPABASE_SERVICE_ROLE_KEY))
+    st.caption("No Streamlit Cloud, isso vem de Manage app → Settings → Secrets.")
 
-# =========================
-# PÓS-LOGIN (PAINEL)
-# =========================
-if is_logged_in():
-    user = st.session_state["auth_user"]
-    st.success("✅ Logado!")
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        st.write("**Usuário:**", user.get("email"))
-        st.write("**User ID:**", user.get("id"))
-    with col_b:
-        if st.button("Sair", type="secondary", use_container_width=True):
-            do_logout()
-
-    st.divider()
-
-    st.subheader("📌 Painel (inicial)")
-    st.info(
-        "Aqui é onde vamos colocar o app de verdade.\n\n"
-        "Próximo passo: criar o menu do ContactBot (Upload da base, Processamento, Relatórios)."
-    )
-
-    # Placeholder de navegação (a gente troca pelo menu real depois)
-    aba = st.radio("O que você quer abrir agora?", ["Upload (em breve)", "Relatórios (em breve)", "Config (em breve)"], horizontal=True)
-    st.write("Você selecionou:", aba)
-
-    st.stop()
-
-# =========================
-# TELA DE LOGIN (quando NÃO está logado)
-# =========================
 col_left, col_right = st.columns([1.2, 1.0], gap="large")
 
 with col_left:
@@ -189,19 +153,19 @@ with col_left:
         try:
             resp = do_login(login_email, login_pass)
 
-            session = getattr(resp, "session", None) or resp.get("session") if isinstance(resp, dict) else None
-            user = getattr(resp, "user", None) or resp.get("user") if isinstance(resp, dict) else None
+            # supabase-py retorna normalmente um AuthResponse com .session e .user
+            session = _pick(resp, "session") or (_pick(resp, "data") and _pick(_pick(resp, "data"), "session"))
+            user = _pick(resp, "user") or (_pick(resp, "data") and _pick(_pick(resp, "data"), "user"))
 
             if session and user:
-                # Garantir dict simples
-                user_dict = user if isinstance(user, dict) else (user.model_dump() if hasattr(user, "model_dump") else dict(user))
-                session_dict = session if isinstance(session, dict) else (session.model_dump() if hasattr(session, "model_dump") else dict(session))
-
-                set_auth_state(user_dict, session_dict)
-                st.success("✅ Login OK! Indo para o painel…")
-                st.rerun()
+                st.success("✅ Login OK!")
+                st.write("Usuário:", _pick(user, "email"))
+                st.write("User ID:", _pick(user, "id"))
+                st.info("Agora você pode colocar aqui o menu/painel do app após login.")
             else:
-                st.error("Login não retornou sessão. Confira e-mail/senha e a confirmação de e-mail no Supabase.")
+                # Mostra o que veio (pra matar o problema na hora)
+                st.error("Login não retornou sessão. Isso normalmente é config errada (URL/ANON) ou usuário não confirmado.")
+                st.write("DEBUG (resp):", resp)
         except Exception as e:
             st.error(f"Login falhou: {e}")
 
@@ -231,7 +195,7 @@ with col_left:
 
 with col_right:
     st.subheader("Admin (definir senha sem e-mail)")
-    st.caption("Isso resolve 'senha incorreta' sem reset por e-mail. Usa SERVICE ROLE KEY do .env / secrets.")
+    st.caption("Isso resolve 'senha incorreta' sem reset por e-mail. Usa SERVICE ROLE KEY do .env/Secrets.")
 
     adm_email = st.text_input("E-mail do usuário", value="", key="adm_email")
     adm_pass1 = st.text_input("Nova senha", value="", type="password", key="adm_pass1")
