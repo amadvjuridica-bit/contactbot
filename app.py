@@ -8,32 +8,24 @@ from supabase import create_client, Client
 # =========================
 st.set_page_config(page_title="ContactBot — Login", layout="wide")
 
-# Carrega .env (funciona LOCAL). No Streamlit Cloud, o certo é st.secrets.
 load_dotenv()
 
-def get_setting(key: str, default: str = "") -> str:
+def get_secret(name: str, default: str = "") -> str:
     """
-    Ordem de prioridade:
-    1) Variável de ambiente do sistema (os.environ)
-    2) Streamlit Secrets (st.secrets)
-    3) .env carregado via load_dotenv (já cai no os.getenv)
+    Busca config primeiro no .env (local), depois em st.secrets (Streamlit Cloud).
     """
-    v = os.getenv(key)
-    if v is not None and str(v).strip() != "":
-        return str(v).strip()
-
+    v = (os.getenv(name, "") or "").strip()
+    if v:
+        return v
     try:
-        # st.secrets pode existir no Cloud
-        if key in st.secrets:
-            return str(st.secrets[key]).strip()
+        v2 = (st.secrets.get(name, "") or "").strip()
+        return v2 if v2 else default
     except Exception:
-        pass
+        return default
 
-    return default
-
-SUPABASE_URL = get_setting("SUPABASE_URL", "").strip()
-SUPABASE_ANON_KEY = get_setting("SUPABASE_ANON_KEY", "").strip()
-SUPABASE_SERVICE_ROLE_KEY = get_setting("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_URL = get_secret("SUPABASE_URL")
+SUPABASE_ANON_KEY = get_secret("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY")
 
 def _mask(s: str, show: int = 6) -> str:
     if not s:
@@ -52,11 +44,9 @@ def ensure_env_or_stop():
         missing.append("SUPABASE_SERVICE_ROLE_KEY")
 
     if missing:
-        st.error(f"Faltando configuração: {', '.join(missing)}")
-        st.info(
-            "Local: crie um arquivo .env na mesma pasta do app.py.\n"
-            "Streamlit Cloud: vá em Manage app → Settings → Secrets e coloque as chaves lá."
-        )
+        st.error(f"Faltando config: {', '.join(missing)}")
+        st.info("Local: crie um arquivo .env na mesma pasta do app.py e reinicie o Streamlit.")
+        st.info("Streamlit Cloud: configure em Manage app → Settings → Secrets (formato TOML).")
         st.stop()
 
 ensure_env_or_stop()
@@ -72,7 +62,53 @@ def get_clients() -> tuple[Client, Client]:
 supabase_public, supabase_admin = get_clients()
 
 # =========================
-# Helpers
+# Session helpers (página única)
+# =========================
+def session_is_logged_in() -> bool:
+    return bool(st.session_state.get("access_token")) and bool(st.session_state.get("user"))
+
+def session_set_from_auth_response(resp):
+    """
+    Salva sessão em st.session_state a partir da resposta do supabase-py.
+    """
+    session = getattr(resp, "session", None) or (resp.get("session") if isinstance(resp, dict) else None)
+    user = getattr(resp, "user", None) or (resp.get("user") if isinstance(resp, dict) else None)
+
+    if not session or not user:
+        return False
+
+    # session pode ser objeto (Session) ou dict dependendo da versão/uso
+    access_token = getattr(session, "access_token", None) or (session.get("access_token") if isinstance(session, dict) else None)
+    refresh_token = getattr(session, "refresh_token", None) or (session.get("refresh_token") if isinstance(session, dict) else None)
+
+    # user pode ser objeto (User) ou dict
+    user_email = getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None)
+    user_id = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None)
+
+    st.session_state["access_token"] = access_token
+    st.session_state["refresh_token"] = refresh_token
+    st.session_state["user"] = {
+        "email": user_email,
+        "id": user_id,
+    }
+    return True
+
+def do_logout():
+    # Tenta sign_out (não é obrigatório, mas é bom)
+    try:
+        supabase_public.auth.sign_out()
+    except Exception:
+        pass
+
+    # Limpa sessão local do Streamlit
+    for k in ["access_token", "refresh_token", "user"]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+    st.rerun()
+
+# =========================
+# Helpers (ADMIN / AUTH)
 # =========================
 def admin_find_user_by_email(email: str):
     """
@@ -87,14 +123,22 @@ def admin_find_user_by_email(email: str):
     per_page = 200
     for _ in range(20):  # 20 * 200 = 4000 usuários
         resp = supabase_admin.auth.admin.list_users(page=page, per_page=per_page)
-        users = getattr(resp, "users", None) or (resp.get("users", []) if isinstance(resp, dict) else [])
+
+        # resp pode ser objeto com .users, ou dict com "users"
+        users = getattr(resp, "users", None)
+        if users is None and isinstance(resp, dict):
+            users = resp.get("users", [])
+
         if not users:
             return None
+
         for u in users:
+            # u pode ser dict
             u_email = (u.get("email") or "").strip().lower()
             if u_email == email:
                 return u
         page += 1
+
     return None
 
 def admin_create_user(email: str, password: str):
@@ -122,14 +166,6 @@ def do_login(email: str, password: str):
     password = password.strip()
     return supabase_public.auth.sign_in_with_password({"email": email, "password": password})
 
-def _pick(obj, key: str):
-    """Pega chave tanto de dict quanto de objeto com atributo."""
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        return obj.get(key)
-    return getattr(obj, key, None)
-
 # =========================
 # UI
 # =========================
@@ -139,8 +175,52 @@ with st.expander("Diagnóstico rápido (config)"):
     st.write("SUPABASE_URL:", SUPABASE_URL)
     st.write("SUPABASE_ANON_KEY:", _mask(SUPABASE_ANON_KEY))
     st.write("SUPABASE_SERVICE_ROLE_KEY:", _mask(SUPABASE_SERVICE_ROLE_KEY))
-    st.caption("No Streamlit Cloud, isso vem de Manage app → Settings → Secrets.")
 
+# =========================
+# PAINEL (página única) — aparece só quando logado
+# =========================
+if session_is_logged_in():
+    user = st.session_state.get("user", {}) or {}
+    user_email = user.get("email", "")
+    user_id = user.get("id", "")
+
+    # Topbar simples
+    top_l, top_r = st.columns([4, 1])
+    with top_l:
+        st.subheader("✅ Painel (logado)")
+        st.caption(f"Logado como: {user_email} | User ID: {user_id}")
+    with top_r:
+        if st.button("Sair (logout)", use_container_width=True):
+            do_logout()
+
+    st.divider()
+
+    tabs = st.tabs(["Dashboard", "Uploads", "Envios", "Relatórios"])
+
+    with tabs[0]:
+        st.write("📌 **Dashboard** (placeholder)")
+        st.info("Aqui vai entrar o resumo executivo e os KPIs.")
+
+    with tabs[1]:
+        st.write("📤 **Uploads** (placeholder)")
+        uploaded = st.file_uploader("Envie um arquivo (CSV/Excel)", type=["csv", "xlsx", "xls"])
+        if uploaded:
+            st.success(f"Arquivo recebido: {uploaded.name} ({uploaded.size} bytes)")
+            st.caption("Depois vamos: validar colunas → salvar no Supabase Storage → registrar no banco.")
+
+    with tabs[2]:
+        st.write("📨 **Envios** (placeholder)")
+        st.info("Aqui vai ficar a gestão dos disparos em massa e filas por cliente.")
+
+    with tabs[3]:
+        st.write("📊 **Relatórios** (placeholder)")
+        st.info("Aqui entram os relatórios sintético/analítico e as tabelas diárias.")
+
+    st.stop()
+
+# =========================
+# LOGIN / ADMIN — aparece só quando NÃO logado
+# =========================
 col_left, col_right = st.columns([1.2, 1.0], gap="large")
 
 with col_left:
@@ -153,19 +233,12 @@ with col_left:
         try:
             resp = do_login(login_email, login_pass)
 
-            # supabase-py retorna normalmente um AuthResponse com .session e .user
-            session = _pick(resp, "session") or (_pick(resp, "data") and _pick(_pick(resp, "data"), "session"))
-            user = _pick(resp, "user") or (_pick(resp, "data") and _pick(_pick(resp, "data"), "user"))
-
-            if session and user:
+            ok = session_set_from_auth_response(resp)
+            if ok:
                 st.success("✅ Login OK!")
-                st.write("Usuário:", _pick(user, "email"))
-                st.write("User ID:", _pick(user, "id"))
-                st.info("Agora você pode colocar aqui o menu/painel do app após login.")
+                st.rerun()
             else:
-                # Mostra o que veio (pra matar o problema na hora)
-                st.error("Login não retornou sessão. Isso normalmente é config errada (URL/ANON) ou usuário não confirmado.")
-                st.write("DEBUG (resp):", resp)
+                st.error("Login não retornou sessão. Confira e-mail/senha e a confirmação de e-mail no Supabase.")
         except Exception as e:
             st.error(f"Login falhou: {e}")
 
