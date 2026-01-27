@@ -35,40 +35,27 @@ UPLOADS_BUCKET = "contactbot-uploads"
 ADMIN_EMAIL = "amadvjuridica@gmail.com"
 
 # =========================
-# Precificação (hardcoded por enquanto; depois colocamos em tabela)
+# Faixas padrão (fallback)
 # =========================
-POS_PAGO_TIERS = [
-    (1, 10999, 0.27),
-    (11000, 30999, 0.25),
-    (31000, 50999, 0.22),
-    (51000, 100999, 0.20),
-    (101000, 10**12, 0.18),
-]
-
-PRE_PAGO_TIERS = [
-    (1000, 10999, 0.34),
-    (11000, 30999, 0.30),
-    (31000, 50999, 0.28),
-    (51000, 100999, 0.26),
-    (101000, 10**12, 0.24),
-]
+DEFAULT_TIERS = {
+    "pos": [
+        (1, 10999, 0.27),
+        (11000, 30999, 0.25),
+        (31000, 50999, 0.22),
+        (51000, 100999, 0.20),
+        (101000, 10**12, 0.18),
+    ],
+    "pre": [
+        (1000, 10999, 0.34),
+        (11000, 30999, 0.30),
+        (31000, 50999, 0.28),
+        (51000, 100999, 0.26),
+        (101000, 10**12, 0.24),
+    ],
+}
 
 BILLABLE_STATUSES = {"sent", "delivered", "read"}
 NON_BILLABLE_STATUSES = {"undelivered"}
-
-def tier_price(plan_tipo: str, qty_billable: int) -> float:
-    tiers = POS_PAGO_TIERS if plan_tipo == "pos" else PRE_PAGO_TIERS
-    for a, b, p in tiers:
-        if a <= qty_billable <= b:
-            return p
-    return tiers[-1][2]
-
-def next_tier(plan_tipo: str, qty_billable: int):
-    tiers = POS_PAGO_TIERS if plan_tipo == "pos" else PRE_PAGO_TIERS
-    for a, b, p in tiers:
-        if qty_billable < a:
-            return (a, b, p)
-    return None
 
 def _mask(s: str, show: int = 6) -> str:
     if not s:
@@ -269,16 +256,7 @@ def db_list_uploads(remessa_id=None, limit=100):
         q = q.eq("remessa_id", remessa_id)
     return q.execute()
 
-def db_get_cliente(cliente_id: int):
-    return supabase_admin.table("clientes").select("*").eq("id", cliente_id).limit(1).execute()
-
 # ---- Admin tables (config)
-def db_list_remuneracao_parametros():
-    return supabase_admin.table("remuneracao_parametros").select("*").order("codigo").execute()
-
-def db_update_remuneracao_parametro(row_id: int, payload: dict):
-    return supabase_admin.table("remuneracao_parametros").update(payload).eq("id", row_id).execute()
-
 def db_get_email_config():
     return supabase_admin.table("email_config").select("*").order("created_at", desc=True).limit(1).execute()
 
@@ -298,6 +276,53 @@ def db_upsert_mercadopago_config(payload: dict):
         row_id = existing[0]["id"]
         return supabase_admin.table("mercadopago_config").update(payload).eq("id", row_id).execute()
     return supabase_admin.table("mercadopago_config").insert(payload).execute()
+
+# ---- Pricing tiers (faixas)
+def db_list_pricing_tiers(plan_tipo: str):
+    # tabela esperada: pricing_tiers (plano_tipo, min_qty, max_qty, unit_price, ativo)
+    return supabase_admin.table("pricing_tiers").select("*").eq("plano_tipo", plan_tipo).order("min_qty").execute()
+
+def db_update_pricing_tier(row_id: int, payload: dict):
+    return supabase_admin.table("pricing_tiers").update(payload).eq("id", row_id).execute()
+
+def db_insert_pricing_tiers(rows: list[dict]):
+    return supabase_admin.table("pricing_tiers").insert(rows).execute()
+
+def load_tiers_from_db_or_default(plan_tipo: str):
+    """
+    Retorna lista de tuplas (min, max, price).
+    Se não conseguir ler do DB (tabela não existe / vazia), usa DEFAULT_TIERS.
+    """
+    try:
+        resp = db_list_pricing_tiers(plan_tipo)
+        rows = _resp_data(resp) or []
+        rows = [r for r in rows if r.get("ativo", True)]
+        if not rows:
+            return DEFAULT_TIERS[plan_tipo]
+        out = []
+        for r in rows:
+            mn = int(r.get("min_qty") or 0)
+            mx = int(r.get("max_qty") or 10**12)
+            pr = float(r.get("unit_price") or 0.0)
+            out.append((mn, mx, pr))
+        out.sort(key=lambda x: x[0])
+        return out
+    except Exception:
+        return DEFAULT_TIERS[plan_tipo]
+
+def tier_price(plan_tipo: str, qty_billable: int) -> float:
+    tiers = load_tiers_from_db_or_default(plan_tipo)
+    for a, b, p in tiers:
+        if a <= qty_billable <= b:
+            return p
+    return tiers[-1][2]
+
+def next_tier(plan_tipo: str, qty_billable: int):
+    tiers = load_tiers_from_db_or_default(plan_tipo)
+    for a, b, p in tiers:
+        if qty_billable < a:
+            return (a, b, p)
+    return None
 
 # =========================
 # Storage helpers
@@ -418,7 +443,7 @@ if session_is_logged_in():
     tabs = st.tabs(base_tabs)
 
     # -------------------------
-    # Dashboard (simples por enquanto)
+    # Dashboard
     # -------------------------
     with tabs[0]:
         st.info("Dashboard será preenchido com KPIs depois que Remuneração + Relatórios estiverem consolidados.")
@@ -570,17 +595,17 @@ if session_is_logged_in():
                 } for r in rems], use_container_width=True)
 
     # -------------------------
-    # Relatórios (próximo passo)
+    # Relatórios
     # -------------------------
     with tabs[3]:
-        st.info("Relatórios (sintético + analítico + PDF) será o próximo passo após Remuneração estar fechada por remessa e o fluxo de e-mail configurado.")
+        st.info("Relatórios (sintético + analítico + PDF) será o próximo passo após o fechamento da Remuneração e configuração do e-mail.")
 
     # -------------------------
-    # Remuneração (AGORA)
+    # Remuneração (somente ENVIO; botões NÃO entram)
     # -------------------------
     with tabs[4]:
         st.write("### Remuneração")
-        st.caption("Cálculo por remessa (com base no CSV de Envios) + consolidado mensal por cliente (pós-pago).")
+        st.caption("Cálculo por remessa e consolidado mensal por cliente. (Botões NÃO entram na remuneração.)")
 
         clientes_resp = db_list_clientes()
         clientes = _resp_data(clientes_resp)
@@ -593,7 +618,7 @@ if session_is_logged_in():
             map_label_to_cliente = {f'{c["razao_social"]} ({c["slug"]})': c for c in clientes}
             cliente_label = st.selectbox("Cliente", list(map_label_to_cliente.keys()), key="pay_cli")
             cliente = map_label_to_cliente[cliente_label]
-            plano_tipo = cliente.get("plano_tipo", "pos")
+            plano_tipo = cliente.get("plano_tipo", "pos")  # pos / pre
 
             today = date.today()
             colm1, colm2 = st.columns(2)
@@ -763,7 +788,7 @@ if session_is_logged_in():
     if is_admin_user():
         with tabs[5]:
             st.write("### Configurações (Admin)")
-            st.caption("Apenas o administrador pode ver esta área. Aqui ficam: clientes, valores (R$), e-mail e PIX.")
+            st.caption("Somente administrador: clientes, faixas de remuneração (R$), e-mail (SMTP) e PIX (Mercado Pago).")
 
             sec = st.tabs(["Clientes", "Valores (Remuneração)", "E-mail (SMTP)", "PIX (Mercado Pago)"])
 
@@ -775,7 +800,7 @@ if session_is_logged_in():
                 clientes = _resp_data(clientes_resp)
 
                 with st.expander("➕ Cadastrar novo cliente", expanded=True):
-                    cnpj = st.text_input("CNPJ (somente números ou com máscara)", value="", key="adm_cnpj")
+                    cnpj = st.text_input("CNPJ", value="", key="adm_cnpj")
                     razao = st.text_input("Razão social", value="", key="adm_razao")
                     contato_nome = st.text_input("Contato (nome)", value="", key="adm_contato_nome")
                     contato_email = st.text_input("Contato (e-mail)", value="", key="adm_contato_email")
@@ -784,7 +809,7 @@ if session_is_logged_in():
                     plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0, key="adm_plano")
                     plano_tipo = "pos" if plano_label == "Pós-pago" else "pre"
 
-                    st.caption("Obs: o slug é gerado automaticamente a partir da Razão Social (padronizado).")
+                    st.caption("Slug é gerado automaticamente pela Razão Social (padronizado).")
 
                     if st.button("Salvar cliente", type="primary", use_container_width=True):
                         try:
@@ -807,7 +832,6 @@ if session_is_logged_in():
                 if not clientes:
                     st.info("Nenhum cliente cadastrado ainda.")
                 else:
-                    # seleção p/ edição
                     map_label = {f'{c["razao_social"]} ({c["slug"]}) [id {c["id"]}]': c for c in clientes}
                     sel = st.selectbox("Selecionar cliente para editar", list(map_label.keys()), key="adm_cli_edit")
                     c = map_label[sel]
@@ -825,7 +849,7 @@ if session_is_logged_in():
                         e_plano_tipo = "pos" if e_plano_label == "Pós-pago" else "pre"
 
                     e_ativo = st.checkbox("Ativo", value=bool(c.get("ativo", True)), key="adm_e_ativo")
-                    st.caption("Slug não é editável aqui (para não quebrar histórico).")
+                    st.caption("Slug não é editável (para não quebrar histórico).")
 
                     if st.button("Atualizar cliente", use_container_width=True):
                         try:
@@ -857,53 +881,87 @@ if session_is_logged_in():
                         use_container_width=True
                     )
 
-            # ---- Valores remuneração (tabela)
+            # ---- Valores remuneração (faixas)
             with sec[1]:
-                st.write("#### Valores (Remuneração) — editar só R$")
-                st.caption("Esses valores ficam na tabela e podem mudar. O cálculo ainda está no hardcoded; no próximo passo vamos ligar isso aqui no cálculo.")
+                st.write("#### Valores (Remuneração) — por faixa (min→max)")
+                st.caption("Aqui você edita SOMENTE o valor unitário (R$). As quantidades ficam fixas.")
 
-                try:
-                    resp = db_list_remuneracao_parametros()
-                    rows = _resp_data(resp) or []
-                except Exception as e:
-                    st.error(f"Não consegui ler remuneracao_parametros: {e}")
-                    rows = []
+                def render_tiers(plan_tipo: str, title: str):
+                    st.subheader(title)
+                    try:
+                        resp = db_list_pricing_tiers(plan_tipo)
+                        rows = _resp_data(resp) or []
+                        rows = sorted(rows, key=lambda x: int(x.get("min_qty") or 0))
+                        table_exists = True
+                    except Exception as e:
+                        table_exists = False
+                        rows = []
+                        st.error(f"Não consegui acessar a tabela pricing_tiers (plano {plan_tipo}): {e}")
 
-                if not rows:
-                    st.info("Tabela vazia ou não existe. (Confirme se você rodou o SQL de criação das tabelas.)")
-                else:
-                    # Lista simples e editor por linha
-                    for r in rows:
-                        with st.expander(f'{r.get("codigo")} — {r.get("descricao")}', expanded=False):
-                            colA, colB, colC = st.columns([2, 1, 1])
-                            with colA:
-                                desc = st.text_input("Descrição", value=r.get("descricao") or "", key=f"rp_desc_{r['id']}")
-                                unidade = st.text_input("Unidade", value=r.get("unidade") or "un", key=f"rp_un_{r['id']}")
-                            with colB:
-                                qtd_fixa = st.number_input("Quantidade fixa (travada no app depois)", value=float(r.get("quantidade_fixa") or 0), step=1.0, key=f"rp_q_{r['id']}")
-                            with colC:
-                                valor_unit = st.number_input("Valor unitário (R$)", value=float(r.get("valor_unitario") or 0), step=0.01, key=f"rp_v_{r['id']}")
+                    if not table_exists:
+                        st.info("Se a tabela não existe ainda, precisamos criar no Supabase (SQL).")
+                        return
 
-                            ativo = st.checkbox("Ativo", value=bool(r.get("ativo", True)), key=f"rp_a_{r['id']}")
-
-                            if st.button("Salvar", key=f"rp_save_{r['id']}", use_container_width=True):
-                                try:
-                                    db_update_remuneracao_parametro(r["id"], {
-                                        "descricao": desc,
-                                        "unidade": unidade,
-                                        "quantidade_fixa": qtd_fixa,
-                                        "valor_unitario": valor_unit,
-                                        "ativo": bool(ativo),
+                    if not rows:
+                        st.warning("Sem faixas no banco ainda.")
+                        st.caption("Use o botão abaixo para inserir as faixas padrão (você poderá editar os valores depois).")
+                        if st.button(f"Criar faixas padrão ({plan_tipo.upper()})", key=f"seed_{plan_tipo}", use_container_width=True):
+                            try:
+                                seed = []
+                                for mn, mx, pr in DEFAULT_TIERS[plan_tipo]:
+                                    seed.append({
+                                        "plano_tipo": plan_tipo,
+                                        "min_qty": int(mn),
+                                        "max_qty": int(mx),
+                                        "unit_price": float(pr),
+                                        "ativo": True,
                                     })
+                                db_insert_pricing_tiers(seed)
+                                st.success("✅ Faixas criadas.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Falha ao inserir faixas: {e}")
+                        return
+
+                    # Editor por faixa (min/max travados; só preço editável)
+                    for r in rows:
+                        mn = int(r.get("min_qty") or 0)
+                        mx = int(r.get("max_qty") or 10**12)
+                        pr = float(r.get("unit_price") or 0.0)
+                        ativo = bool(r.get("ativo", True))
+
+                        label = f"DE {mn:,} A {mx:,}".replace(",", ".") if mx < 10**11 else f"ACIMA DE {mn:,}".replace(",", ".")
+                        with st.expander(f"{label}  →  R$ {pr:.2f}", expanded=False):
+                            c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+                            with c1:
+                                st.number_input("Min", value=mn, step=1, disabled=True, key=f"{plan_tipo}_mn_{r['id']}")
+                            with c2:
+                                st.number_input("Max", value=mx, step=1, disabled=True, key=f"{plan_tipo}_mx_{r['id']}")
+                            with c3:
+                                new_price = st.number_input("Valor unitário (R$)", value=pr, step=0.01, key=f"{plan_tipo}_pr_{r['id']}")
+                            with c4:
+                                new_ativo = st.checkbox("Ativo", value=ativo, key=f"{plan_tipo}_at_{r['id']}")
+
+                            if st.button("Salvar", key=f"{plan_tipo}_save_{r['id']}", use_container_width=True):
+                                try:
+                                    db_update_pricing_tier(r["id"], {"unit_price": float(new_price), "ativo": bool(new_ativo)})
                                     st.success("✅ Salvo.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Erro ao salvar: {e}")
 
+                # Render POS e PRE
+                render_tiers("pos", "PÓS-PAGO")
+                st.divider()
+                render_tiers("pre", "PRÉ-PAGO")
+
+                st.divider()
+                st.caption("Obs: Remuneração do app já usa essas faixas se existirem/estiverem ativas. Se não existir, cai no padrão (não quebra).")
+
             # ---- E-mail config
             with sec[2]:
                 st.write("#### E-mail (SMTP) — envio automático para clientes")
-                st.caption("Preencha aqui. No próximo passo vamos gerar o e-mail e enviar automaticamente com base nos relatórios.")
+                st.caption("Preencha aqui. No próximo passo vamos gerar e enviar automaticamente com base nos relatórios.")
 
                 existing = _resp_data(db_get_email_config())
                 row = existing[0] if existing else {}
