@@ -202,6 +202,7 @@ def db_list_clientes():
     return supabase_admin.table("clientes").select("*").order("razao_social").execute()
 
 def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo):
+    # ✅ CORRIGIDO: removido uso de coluna 'ativo' (não existe na sua tabela clientes)
     slug = slugify(razao)
     return supabase_admin.table("clientes").insert({
         "cnpj": cnpj.strip(),
@@ -211,7 +212,6 @@ def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp
         "contato_email": (contato_email or "").strip() or None,
         "contato_whatsapp": (contato_whatsapp or "").strip() or None,
         "plano_tipo": plano_tipo,   # "pos" ou "pre"
-        "ativo": True
     }).execute()
 
 def db_update_cliente(cliente_id, payload: dict):
@@ -848,7 +848,6 @@ if session_is_logged_in():
                         e_plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0 if plano_atual == "Pós-pago" else 1, key="adm_e_plano")
                         e_plano_tipo = "pos" if e_plano_label == "Pós-pago" else "pre"
 
-                    e_ativo = st.checkbox("Ativo", value=bool(c.get("ativo", True)), key="adm_e_ativo")
                     st.caption("Slug não é editável (para não quebrar histórico).")
 
                     if st.button("Atualizar cliente", use_container_width=True):
@@ -860,7 +859,6 @@ if session_is_logged_in():
                                 "contato_email": (e_contato_email or "").strip() or None,
                                 "contato_whatsapp": (e_contato_whats or "").strip() or None,
                                 "plano_tipo": e_plano_tipo,
-                                "ativo": bool(e_ativo),
                             }
                             db_update_cliente(c["id"], payload)
                             st.success("✅ Cliente atualizado.")
@@ -876,7 +874,6 @@ if session_is_logged_in():
                             "razao_social": x.get("razao_social"),
                             "slug": x.get("slug"),
                             "plano_tipo": x.get("plano_tipo"),
-                            "ativo": x.get("ativo"),
                         } for x in clientes],
                         use_container_width=True
                     )
@@ -1084,7 +1081,7 @@ with col_right:
     st.caption("Usa SERVICE ROLE KEY do .env/Secrets.")
     adm_email = st.text_input("E-mail do usuário", value="", key="adm_email")
     adm_pass1 = st.text_input("Nova senha", value="", type="password", key="adm_pass1")
-    adm_pass2 = st.text_input("Confirmar nova senha", value="", type="password", key="adm_pass2")
+    adm_pass2 = st.text_input("Confirmar senha", value="", type="password", key="adm_pass2")
 
     if st.button("Definir senha agora", use_container_width=True):
         try:
