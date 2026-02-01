@@ -198,45 +198,69 @@ def parse_csv_preview(data: bytes, max_rows: int = 30):
 def _resp_data(resp):
     return getattr(resp, "data", None) or (resp.get("data", []) if isinstance(resp, dict) else [])
 
+# --- CLIENTES
 def db_list_clientes():
     return supabase_admin.table("clientes").select("*").order("razao_social").execute()
 
-def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo):
-    # ✅ CORRIGIDO: removido uso de coluna 'ativo' (não existe na sua tabela clientes)
+def db_insert_cliente(cnpj, razao, contato_nome, email_principal, contato_whatsapp, plano_tipo):
+    """
+    Alinha com seu schema real:
+      clientes.email_principal (NOT NULL)
+      clientes.plano_tipo
+      clientes.contato_nome / contato_whatsapp
+      clientes.ativo
+    """
     slug = slugify(razao)
-    return supabase_admin.table("clientes").insert({
-        "cnpj": cnpj.strip(),
-        "razao_social": razao.strip(),
+    payload = {
+        "cnpj": (cnpj or "").strip(),
+        "razao_social": (razao or "").strip(),
         "slug": slug,
         "contato_nome": (contato_nome or "").strip() or None,
-        "contato_email": (contato_email or "").strip() or None,
+        "email_principal": (email_principal or "").strip(),  # NOT NULL
         "contato_whatsapp": (contato_whatsapp or "").strip() or None,
-        "plano_tipo": plano_tipo,   # "pos" ou "pre"
-    }).execute()
+        "plano_tipo": plano_tipo,  # "pos" ou "pre"
+        "ativo": True,
+    }
+    return supabase_admin.table("clientes").insert(payload).execute()
 
 def db_update_cliente(cliente_id, payload: dict):
     return supabase_admin.table("clientes").update(payload).eq("id", cliente_id).execute()
 
+# --- REMESSAS (schema real: numero, data, titulo)
 def db_list_remessas(cliente_id=None, limit=100):
-    # SUA TABELA TEM A COLUNA "data" (não "data_remessa")
-    q = supabase_admin.table("remessas").select("*").order("data", desc=True).order("numero_remessa", desc=True).limit(limit)
+    q = (
+        supabase_admin
+        .table("remessas")
+        .select("*")
+        .order("data", desc=True)
+        .order("numero", desc=True)
+        .limit(limit)
+    )
     if cliente_id:
         q = q.eq("cliente_id", cliente_id)
     return q.execute()
 
-def db_insert_remessa(cliente_id, numero_remessa, data_remessa, remessa_key, observacao=None):
-    return supabase_admin.table("remessas").insert({
+def db_insert_remessa(cliente_id, numero, data_remessa, titulo):
+    """
+    Alinha com seu schema real:
+      remessas.numero (NOT NULL)
+      remessas.data (NOT NULL)
+      remessas.titulo (NOT NULL)  -> vamos guardar aqui o remessa_key (CB-YYYYMMDD-XXX-SLUG)
+    """
+    payload = {
         "cliente_id": cliente_id,
-        "numero_remessa": int(numero_remessa),
+        "numero": int(numero),
         "data": str(data_remessa),
-        "remessa_key": remessa_key,
+        "titulo": (titulo or "").strip(),          # NOT NULL
         "status": "aguardando_upload",
-        "observacao": (observacao or "").strip() or None
-    }).execute()
+        "versao": 1,
+    }
+    return supabase_admin.table("remessas").insert(payload).execute()
 
-def db_update_remessa_status(remessa_id: int, status: str):
+def db_update_remessa_status(remessa_id: str, status: str):
     return supabase_admin.table("remessas").update({"status": status}).eq("id", remessa_id).execute()
 
+# --- UPLOADS (remessa_id UUID)
 def db_insert_upload_record(user_id, user_email, file_name, bucket, path, size_bytes, sha256, remessa_id, file_tipo):
     return supabase_admin.table("uploads").insert({
         "user_id": user_id,
@@ -279,7 +303,6 @@ def db_upsert_mercadopago_config(payload: dict):
 
 # ---- Pricing tiers (faixas)
 def db_list_pricing_tiers(plan_tipo: str):
-    # tabela esperada: pricing_tiers (plano_tipo, min_qty, max_qty, unit_price, ativo)
     return supabase_admin.table("pricing_tiers").select("*").eq("plano_tipo", plan_tipo).order("min_qty").execute()
 
 def db_update_pricing_tier(row_id: int, payload: dict):
@@ -289,10 +312,6 @@ def db_insert_pricing_tiers(rows: list[dict]):
     return supabase_admin.table("pricing_tiers").insert(rows).execute()
 
 def load_tiers_from_db_or_default(plan_tipo: str):
-    """
-    Retorna lista de tuplas (min, max, price).
-    Se não conseguir ler do DB (tabela não existe / vazia), usa DEFAULT_TIERS.
-    """
     try:
         resp = db_list_pricing_tiers(plan_tipo)
         rows = _resp_data(resp) or []
@@ -436,7 +455,6 @@ if session_is_logged_in():
 
     st.divider()
 
-    # MENU APROVADO (+ Configurações Admin só para você)
     base_tabs = ["Dashboard", "Uploads (CSV)", "Campanhas (Remessas)", "Relatórios", "Remuneração"]
     if is_admin_user():
         base_tabs.append("Configurações (Admin)")
@@ -468,13 +486,13 @@ if session_is_logged_in():
             cliente_label = st.selectbox("Cliente do upload", list(map_label_to_cliente.keys()), key="up_cli")
             cliente = map_label_to_cliente[cliente_label]
 
-            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=100)
+            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=200)
             rems = _resp_data(rem_resp)
 
             if not rems:
                 st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
             else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems}
+                map_label_to_rem = {f'{r.get("titulo")} (nº {r.get("numero")}, id {r.get("id")})': r for r in rems}
                 rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem")
                 rem = map_label_to_rem[rem_label]
 
@@ -499,7 +517,7 @@ if session_is_logged_in():
 
                     if st.button("Salvar CSV (Storage + Registro)", type="primary", use_container_width=True):
                         try:
-                            path = make_storage_path(cliente["slug"], rem["remessa_key"], file_tipo, file_name)
+                            path = make_storage_path(cliente["slug"], rem.get("titulo") or "SEM_TITULO", file_tipo, file_name)
                             storage_upload_csv(UPLOADS_BUCKET, path, data)
 
                             db_insert_upload_record(
@@ -510,11 +528,11 @@ if session_is_logged_in():
                                 path=path,
                                 size_bytes=size_bytes,
                                 sha256=digest,
-                                remessa_id=rem["id"],
+                                remessa_id=rem["id"],     # UUID
                                 file_tipo=file_tipo
                             )
 
-                            up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
+                            up_resp = db_list_uploads(remessa_id=rem["id"], limit=500)
                             ups = _resp_data(up_resp)
                             status = remessa_status_from_uploads(ups)
                             db_update_remessa_status(rem["id"], status)
@@ -526,7 +544,7 @@ if session_is_logged_in():
 
                 st.divider()
                 st.write("#### Uploads desta remessa")
-                up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
+                up_resp = db_list_uploads(remessa_id=rem["id"], limit=500)
                 ups = _resp_data(up_resp)
 
                 if not ups:
@@ -561,18 +579,16 @@ if session_is_logged_in():
 
             c1, c2 = st.columns(2)
             with c1:
-                numero = st.number_input("Número da remessa", min_value=1, step=1, value=50, key="rem_num")
+                numero = st.number_input("Número da remessa", min_value=1, step=1, value=49, key="rem_num")
             with c2:
                 data_rem = st.date_input("Data da remessa", value=date.today(), key="rem_data")
 
             preview_key = remessa_key_from(numero, data_rem, cliente["slug"])
             st.success(f"✅ Nome gerado: **{preview_key}**")
 
-            observacao = st.text_input("Observação (opcional)", key="rem_obs")
-
             if st.button("Criar remessa", type="primary", use_container_width=True):
                 try:
-                    db_insert_remessa(cliente["id"], numero, data_rem, preview_key, observacao)
+                    db_insert_remessa(cliente["id"], numero, data_rem, preview_key)  # titulo = preview_key
                     st.success("✅ Remessa criada!")
                     st.rerun()
                 except Exception as e:
@@ -580,7 +596,7 @@ if session_is_logged_in():
 
             st.divider()
             st.write("#### Últimas remessas do cliente")
-            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=100)
+            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=200)
             rems = _resp_data(rem_resp)
 
             if not rems:
@@ -589,8 +605,8 @@ if session_is_logged_in():
                 st.dataframe([{
                     "id": r.get("id"),
                     "data": r.get("data"),
-                    "numero": r.get("numero_remessa"),
-                    "remessa_key": r.get("remessa_key"),
+                    "numero": r.get("numero"),
+                    "remessa_key (titulo)": r.get("titulo"),
                     "status": r.get("status"),
                 } for r in rems], use_container_width=True)
 
@@ -627,7 +643,7 @@ if session_is_logged_in():
             with colm2:
                 month = st.number_input("Mês", min_value=1, max_value=12, value=today.month, step=1, key="pay_month")
 
-            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=300)
+            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=500)
             rems = _resp_data(rem_resp)
 
             def in_month(r):
@@ -646,11 +662,11 @@ if session_is_logged_in():
             if not rems_month:
                 st.info("Nenhuma remessa neste mês para este cliente.")
             else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems_month}
+                map_label_to_rem = {f'{r.get("titulo")} (nº {r.get("numero")}, id {r.get("id")})': r for r in rems_month}
                 rem_label = st.selectbox("Escolha uma remessa para detalhar", list(map_label_to_rem.keys()), key="pay_rem")
                 rem = map_label_to_rem[rem_label]
 
-                up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
+                up_resp = db_list_uploads(remessa_id=rem["id"], limit=500)
                 ups = _resp_data(up_resp)
                 envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
 
@@ -719,12 +735,12 @@ if session_is_logged_in():
                 total_month = 0.0
 
                 for r in rems_month:
-                    up_resp = db_list_uploads(remessa_id=r["id"], limit=200)
+                    up_resp = db_list_uploads(remessa_id=r["id"], limit=500)
                     ups = _resp_data(up_resp)
                     envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
                     if not envios_files:
                         rows_out.append({
-                            "remessa_key": r.get("remessa_key"),
+                            "remessa_key": r.get("titulo"),
                             "data": r.get("data"),
                             "cobráveis": None,
                             "unit": None,
@@ -738,7 +754,7 @@ if session_is_logged_in():
                     url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
                     if not url:
                         rows_out.append({
-                            "remessa_key": r.get("remessa_key"),
+                            "remessa_key": r.get("titulo"),
                             "data": r.get("data"),
                             "cobráveis": None,
                             "unit": None,
@@ -756,7 +772,7 @@ if session_is_logged_in():
                         total_month += tot
 
                         rows_out.append({
-                            "remessa_key": r.get("remessa_key"),
+                            "remessa_key": r.get("titulo"),
                             "data": r.get("data"),
                             "cobráveis": qty_billable,
                             "unit": f"{unit:.2f}",
@@ -765,7 +781,7 @@ if session_is_logged_in():
                         })
                     except Exception:
                         rows_out.append({
-                            "remessa_key": r.get("remessa_key"),
+                            "remessa_key": r.get("titulo"),
                             "data": r.get("data"),
                             "cobráveis": None,
                             "unit": None,
@@ -803,7 +819,10 @@ if session_is_logged_in():
                     cnpj = st.text_input("CNPJ", value="", key="adm_cnpj")
                     razao = st.text_input("Razão social", value="", key="adm_razao")
                     contato_nome = st.text_input("Contato (nome)", value="", key="adm_contato_nome")
-                    contato_email = st.text_input("Contato (e-mail)", value="", key="adm_contato_email")
+
+                    # IMPORTANTE: schema real usa email_principal (NOT NULL)
+                    email_principal = st.text_input("E-mail principal (obrigatório)", value="", key="adm_email_principal")
+
                     contato_whatsapp = st.text_input("Contato (WhatsApp)", value="", key="adm_contato_whats")
 
                     plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0, key="adm_plano")
@@ -819,8 +838,11 @@ if session_is_logged_in():
                             if not (razao or "").strip():
                                 st.warning("Informe a Razão Social.")
                                 st.stop()
+                            if not (email_principal or "").strip():
+                                st.warning("Informe o E-mail principal (obrigatório).")
+                                st.stop()
 
-                            db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo)
+                            db_insert_cliente(cnpj, razao, contato_nome, email_principal, contato_whatsapp, plano_tipo)
                             st.success("✅ Cliente cadastrado.")
                             st.rerun()
                         except Exception as e:
@@ -840,7 +862,7 @@ if session_is_logged_in():
                     with col1:
                         e_razao = st.text_input("Razão social", value=c.get("razao_social") or "", key="adm_e_razao")
                         e_contato_nome = st.text_input("Contato (nome)", value=c.get("contato_nome") or "", key="adm_e_nome")
-                        e_contato_email = st.text_input("Contato (e-mail)", value=c.get("contato_email") or "", key="adm_e_email")
+                        e_email_principal = st.text_input("E-mail principal", value=c.get("email_principal") or "", key="adm_e_email_principal")
                     with col2:
                         e_cnpj = st.text_input("CNPJ", value=c.get("cnpj") or "", key="adm_e_cnpj")
                         e_contato_whats = st.text_input("Contato (WhatsApp)", value=c.get("contato_whatsapp") or "", key="adm_e_whats")
@@ -848,17 +870,22 @@ if session_is_logged_in():
                         e_plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0 if plano_atual == "Pós-pago" else 1, key="adm_e_plano")
                         e_plano_tipo = "pos" if e_plano_label == "Pós-pago" else "pre"
 
+                    e_ativo = st.checkbox("Ativo", value=bool(c.get("ativo", True)), key="adm_e_ativo")
                     st.caption("Slug não é editável (para não quebrar histórico).")
 
                     if st.button("Atualizar cliente", use_container_width=True):
                         try:
+                            if not (e_email_principal or "").strip():
+                                st.warning("E-mail principal não pode ficar vazio.")
+                                st.stop()
                             payload = {
                                 "cnpj": (e_cnpj or "").strip() or None,
                                 "razao_social": (e_razao or "").strip() or None,
                                 "contato_nome": (e_contato_nome or "").strip() or None,
-                                "contato_email": (e_contato_email or "").strip() or None,
+                                "email_principal": (e_email_principal or "").strip(),
                                 "contato_whatsapp": (e_contato_whats or "").strip() or None,
                                 "plano_tipo": e_plano_tipo,
+                                "ativo": bool(e_ativo),
                             }
                             db_update_cliente(c["id"], payload)
                             st.success("✅ Cliente atualizado.")
@@ -873,7 +900,9 @@ if session_is_logged_in():
                             "cnpj": x.get("cnpj"),
                             "razao_social": x.get("razao_social"),
                             "slug": x.get("slug"),
+                            "email_principal": x.get("email_principal"),
                             "plano_tipo": x.get("plano_tipo"),
+                            "ativo": x.get("ativo"),
                         } for x in clientes],
                         use_container_width=True
                     )
@@ -920,7 +949,6 @@ if session_is_logged_in():
                                 st.error(f"Falha ao inserir faixas: {e}")
                         return
 
-                    # Editor por faixa (min/max travados; só preço editável)
                     for r in rows:
                         mn = int(r.get("min_qty") or 0)
                         mx = int(r.get("max_qty") or 10**12)
@@ -947,7 +975,6 @@ if session_is_logged_in():
                                 except Exception as e:
                                     st.error(f"Erro ao salvar: {e}")
 
-                # Render POS e PRE
                 render_tiers("pos", "PÓS-PAGO")
                 st.divider()
                 render_tiers("pre", "PRÉ-PAGO")
@@ -1081,7 +1108,7 @@ with col_right:
     st.caption("Usa SERVICE ROLE KEY do .env/Secrets.")
     adm_email = st.text_input("E-mail do usuário", value="", key="adm_email")
     adm_pass1 = st.text_input("Nova senha", value="", type="password", key="adm_pass1")
-    adm_pass2 = st.text_input("Confirmar senha", value="", type="password", key="adm_pass2")
+    adm_pass2 = st.text_input("Confirmar nova senha", value="", type="password", key="adm_pass2")
 
     if st.button("Definir senha agora", use_container_width=True):
         try:
