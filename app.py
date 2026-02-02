@@ -181,19 +181,9 @@ def make_storage_path(cliente_slug: str, remessa_key: str, file_tipo: str, origi
     return f"{cliente_slug}/{remessa_key}/{file_tipo}/{ts}__{original_name}"
 
 def parse_csv_preview(data: bytes, max_rows: int = 30):
-    # preview também tenta detectar delimitador
-    text = data.decode("utf-8-sig", errors="replace")
-    sample = text[:4000]
-    delim = ","
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=";,")
-        delim = dialect.delimiter
-    except Exception:
-        if ";" in sample and "," not in sample:
-            delim = ";"
-
+    text = data.decode("utf-8", errors="replace")
     f = io.StringIO(text)
-    reader = csv.DictReader(f, delimiter=delim)
+    reader = csv.DictReader(f)
     headers = reader.fieldnames or []
     rows = []
     for i, row in enumerate(reader):
@@ -213,7 +203,9 @@ def db_list_clientes():
 
 def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo):
     slug = slugify(razao)
-    return supabase_admin.table("clientes").insert({
+    # Observação: sua tabela "clientes" pode ter campos adicionais NOT NULL (ex.: email_principal).
+    # Aqui gravamos contato_email também como email_principal se existir esse campo no schema.
+    payload = {
         "cnpj": cnpj.strip(),
         "razao_social": razao.strip(),
         "slug": slug,
@@ -222,29 +214,46 @@ def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp
         "contato_whatsapp": (contato_whatsapp or "").strip() or None,
         "plano_tipo": plano_tipo,   # "pos" ou "pre"
         "ativo": True
-    }).execute()
+    }
+
+    # Se sua tabela tiver email_principal como NOT NULL, salva com o contato_email
+    # (isso evita o erro 23502)
+    if payload["contato_email"]:
+        payload["email_principal"] = payload["contato_email"]
+
+    return supabase_admin.table("clientes").insert(payload).execute()
 
 def db_update_cliente(cliente_id, payload: dict):
+    # Também espelha email_principal se o usuário editar contato_email
+    if "contato_email" in payload and payload.get("contato_email"):
+        payload["email_principal"] = payload.get("contato_email")
     return supabase_admin.table("clientes").update(payload).eq("id", cliente_id).execute()
 
 def db_list_remessas(cliente_id=None, limit=100):
-    # SUA TABELA TEM A COLUNA "data" (não "data_remessa")
-    q = supabase_admin.table("remessas").select("*").order("data", desc=True).order("numero_remessa", desc=True).limit(limit)
+    # SUA TABELA TEM A COLUNA "data"
+    # E (pelo erro que você pegou) ela também tem campos NOT NULL como "numero" e "remessa_key"
+    q = supabase_admin.table("remessas").select("*").order("data", desc=True).order("numero", desc=True).limit(limit)
     if cliente_id:
         q = q.eq("cliente_id", cliente_id)
     return q.execute()
 
 def db_insert_remessa(cliente_id, numero_remessa, data_remessa, remessa_key, observacao=None):
-    return supabase_admin.table("remessas").insert({
+    # Sua tabela "remessas" aparentemente usa:
+    # - coluna "numero" (NOT NULL) (e também existe "numero_remessa" no seu print antigo)
+    # - coluna "remessa_key" (NOT NULL)
+    # Para ficar compatível com os dois cenários, gravamos ambos.
+    payload = {
         "cliente_id": cliente_id,
-        "numero_remessa": int(numero_remessa),
         "data": str(data_remessa),
         "remessa_key": remessa_key,
         "status": "aguardando_upload",
-        "observacao": (observacao or "").strip() or None
-    }).execute()
+        "observacao": (observacao or "").strip() or None,
+        "numero": int(numero_remessa),
+        "numero_remessa": int(numero_remessa),
+    }
+    return supabase_admin.table("remessas").insert(payload).execute()
 
-def db_update_remessa_status(remessa_id: int, status: str):
+def db_update_remessa_status(remessa_id, status: str):
     return supabase_admin.table("remessas").update({"status": status}).eq("id", remessa_id).execute()
 
 def db_insert_upload_record(user_id, user_email, file_name, bucket, path, size_bytes, sha256, remessa_id, file_tipo):
@@ -265,6 +274,12 @@ def db_list_uploads(remessa_id=None, limit=100):
     if remessa_id:
         q = q.eq("remessa_id", remessa_id)
     return q.execute()
+
+def db_update_upload(upload_id, payload: dict):
+    return supabase_admin.table("uploads").update(payload).eq("id", upload_id).execute()
+
+def db_delete_upload(upload_id):
+    return supabase_admin.table("uploads").delete().eq("id", upload_id).execute()
 
 # ---- Admin tables (config)
 def db_get_email_config():
@@ -289,7 +304,7 @@ def db_upsert_mercadopago_config(payload: dict):
 
 # ---- Pricing tiers (faixas)
 def db_list_pricing_tiers(plan_tipo: str):
-    # tabela esperada: pricing_tiers (plano_tipo, min_qty, max_qty, unit_price, ativo)
+    # tabela: pricing_tiers (plano_tipo, min_qty, max_qty, unit_price, ativo)
     return supabase_admin.table("pricing_tiers").select("*").eq("plano_tipo", plan_tipo).order("min_qty").execute()
 
 def db_update_pricing_tier(row_id: int, payload: dict):
@@ -300,7 +315,7 @@ def db_insert_pricing_tiers(rows: list[dict]):
 
 def load_tiers_from_db_or_default(plan_tipo: str):
     """
-    Retorna lista de tuplas (min, max, price).
+    Retorna lista (min, max, price).
     Se não conseguir ler do DB (tabela não existe / vazia), usa DEFAULT_TIERS.
     """
     try:
@@ -322,15 +337,10 @@ def load_tiers_from_db_or_default(plan_tipo: str):
 
 def tier_price(plan_tipo: str, qty_billable: int) -> float:
     tiers = load_tiers_from_db_or_default(plan_tipo)
-    if not tiers:
-        return 0.0
-    # se qty abaixo do mínimo da primeira faixa, usamos o preço da primeira faixa (pra não mostrar 0.18 em qty=0)
-    if qty_billable < int(tiers[0][0]):
-        return float(tiers[0][2])
     for a, b, p in tiers:
         if a <= qty_billable <= b:
-            return float(p)
-    return float(tiers[-1][2])
+            return p
+    return tiers[-1][2]
 
 def next_tier(plan_tipo: str, qty_billable: int):
     tiers = load_tiers_from_db_or_default(plan_tipo)
@@ -357,6 +367,10 @@ def storage_signed_url(bucket: str, path: str, expires_in: int = 3600) -> str:
         return resp["data"].get("signedUrl") or resp["data"].get("signedURL") or ""
     return ""
 
+def storage_remove_paths(bucket: str, paths: list[str]):
+    # remove recebe lista de paths
+    return supabase_admin.storage.from_(bucket).remove(paths)
+
 def fetch_bytes_from_signed_url(url: str) -> bytes:
     import requests
     r = requests.get(url, timeout=60)
@@ -367,59 +381,20 @@ def fetch_bytes_from_signed_url(url: str) -> bytes:
 # Parse Envios CSV -> métricas
 # =========================
 def infer_status_column(headers: list[str]) -> str | None:
-    """
-    Detecta a coluna de status em CSVs reais.
-    Ex.: status, situacao, delivery_status, message_status, message_status, etc.
-    """
-    if not headers:
-        return None
-
-    # normaliza
-    lowered = {h.strip().lower(): h for h in headers if h}
-
-    candidates = [
-        "message_status",
-        "messagestatus",
-        "status",
-        "situacao",
-        "estado",
-        "resultado",
-        "delivery_status",
-        "deliverystatus",
-    ]
+    candidates = ["status", "situacao", "estado", "resultado", "delivery_status", "message_status"]
+    lowered = {h.lower(): h for h in headers}
     for c in candidates:
         if c in lowered:
             return lowered[c]
-
-    # fallback: contém "status"
     for h in headers:
-        if h and "status" in h.strip().lower():
+        if "status" in h.lower():
             return h
     return None
 
-def _detect_delimiter(text: str) -> str:
-    sample = text[:8000]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=";,")
-        return dialect.delimiter
-    except Exception:
-        if ";" in sample and "," not in sample:
-            return ";"
-        return ","
-
 def compute_envios_metrics(csv_bytes: bytes):
-    """
-    Lê CSV (normalmente separado por ';') e calcula:
-    - total_rows
-    - billable (sent/delivered/read)
-    - undelivered (não cobra)
-    - by_status
-    """
-    text = csv_bytes.decode("utf-8-sig", errors="replace")
-    delim = _detect_delimiter(text)
-
+    text = csv_bytes.decode("utf-8", errors="replace")
     f = io.StringIO(text)
-    reader = csv.DictReader(f, delimiter=delim)
+    reader = csv.DictReader(f)
     headers = reader.fieldnames or []
     status_col = infer_status_column(headers)
 
@@ -429,28 +404,23 @@ def compute_envios_metrics(csv_bytes: bytes):
         "undelivered": 0,
         "by_status": {},
         "status_col": status_col or "",
-        "delimiter": delim,
     }
 
     for row in reader:
         counts["total_rows"] += 1
-
         status = ""
         if status_col:
             status = (row.get(status_col) or "").strip().lower()
 
-        if not status:
-            continue
-
-        counts["by_status"][status] = counts["by_status"].get(status, 0) + 1
-
-        if status in NON_BILLABLE_STATUSES:
-            counts["undelivered"] += 1
-        elif status in BILLABLE_STATUSES:
-            counts["billable"] += 1
-        else:
-            # status desconhecido: por segurança não cobra
-            pass
+        if status:
+            counts["by_status"][status] = counts["by_status"].get(status, 0) + 1
+            if status in NON_BILLABLE_STATUSES:
+                counts["undelivered"] += 1
+            elif status in BILLABLE_STATUSES:
+                counts["billable"] += 1
+            else:
+                # status desconhecido: não soma em cobráveis
+                pass
 
     return counts
 
@@ -534,7 +504,7 @@ if session_is_logged_in():
             if not rems:
                 st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
             else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems}
+                map_label_to_rem = {f'{r["remessa_key"]} (nº {r.get("numero") or r.get("numero_remessa")}, id {r["id"]})': r for r in rems}
                 rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem")
                 rem = map_label_to_rem[rem_label]
 
@@ -548,10 +518,6 @@ if session_is_logged_in():
                     digest = sha256_hex(data)
 
                     st.caption(f"Arquivo: **{file_name}** | {size_bytes} bytes | SHA256 `{digest[:16]}...`")
-
-                    # avisos rápidos
-                    if file_tipo == "botoes" and "envio" in file_name.lower():
-                        st.warning("⚠️ Esse arquivo parece ser de ENVIO (pelo nome), mas você selecionou BOTÕES. Se for envios, selecione 'envios'.")
 
                     try:
                         headers, rows = parse_csv_preview(data, max_rows=30)
@@ -597,12 +563,73 @@ if session_is_logged_in():
                     st.info("Nenhum upload nesta remessa ainda.")
                 else:
                     st.dataframe([{
+                        "id": u.get("id"),
                         "created_at": u.get("created_at"),
                         "tipo": u.get("file_tipo"),
                         "file_name": u.get("file_name"),
                         "size_bytes": u.get("size_bytes"),
                         "storage_path": u.get("storage_path"),
-                    } for u in ups], use_container_width=True)
+                    } for u in ups], use_container_width=True, hide_index=True)
+
+                    # ✅ CORREÇÃO RÁPIDA: reclassificar tipo (Admin)
+                    if is_admin_user():
+                        st.divider()
+                        st.write("#### Correções rápidas (Admin)")
+                        st.caption("Use isto para corrigir upload classificado no tipo errado (ex.: Envios salvo como Botões).")
+
+                        # Escolher um upload
+                        map_u = {}
+                        for u in ups:
+                            uid = u.get("id")
+                            label = f'[{u.get("file_tipo")}] {u.get("file_name")} — {u.get("created_at")} — id {uid}'
+                            map_u[label] = u
+
+                        sel_u_label = st.selectbox("Selecione o upload para corrigir", list(map_u.keys()), key="fix_up_sel")
+                        sel_u = map_u[sel_u_label]
+
+                        colf1, colf2, colf3 = st.columns([1.2, 1.2, 1.6])
+                        with colf1:
+                            new_tipo = st.selectbox("Novo tipo", ["envios", "botoes", "base"], index=0, key="fix_new_tipo")
+                        with colf2:
+                            if st.button("Aplicar reclassificação", type="primary", use_container_width=True):
+                                try:
+                                    db_update_upload(sel_u["id"], {"file_tipo": new_tipo})
+                                    # Recalcula status remessa
+                                    up_resp2 = db_list_uploads(remessa_id=rem["id"], limit=200)
+                                    ups2 = _resp_data(up_resp2)
+                                    status2 = remessa_status_from_uploads(ups2)
+                                    db_update_remessa_status(rem["id"], status2)
+                                    st.success(f"✅ Atualizado para {new_tipo}. Status remessa: {status2}")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao reclassificar: {e}")
+                        with colf3:
+                            st.warning("⚠️ Reset/Excluir: use só quando for realmente limpar teste.")
+                            rm_storage = st.checkbox("Remover também do Storage", value=False, key="fix_rm_storage")
+                            if st.button("Excluir este upload (registro)", use_container_width=True):
+                                try:
+                                    # opcional: remove arquivo do storage
+                                    if rm_storage:
+                                        try:
+                                            b = sel_u.get("storage_bucket") or UPLOADS_BUCKET
+                                            p = sel_u.get("storage_path")
+                                            if p:
+                                                storage_remove_paths(b, [p])
+                                        except Exception as e2:
+                                            st.warning(f"Não consegui remover do Storage (seguindo mesmo assim): {e2}")
+
+                                    db_delete_upload(sel_u["id"])
+
+                                    # Recalcula status remessa
+                                    up_resp3 = db_list_uploads(remessa_id=rem["id"], limit=200)
+                                    ups3 = _resp_data(up_resp3)
+                                    status3 = remessa_status_from_uploads(ups3)
+                                    db_update_remessa_status(rem["id"], status3)
+
+                                    st.success(f"✅ Upload excluído. Status remessa: {status3}")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao excluir: {e}")
 
     # -------------------------
     # Campanhas (Remessas)
@@ -653,10 +680,10 @@ if session_is_logged_in():
                 st.dataframe([{
                     "id": r.get("id"),
                     "data": r.get("data"),
-                    "numero": r.get("numero_remessa"),
+                    "numero": r.get("numero") or r.get("numero_remessa"),
                     "remessa_key": r.get("remessa_key"),
                     "status": r.get("status"),
-                } for r in rems], use_container_width=True)
+                } for r in rems], use_container_width=True, hide_index=True)
 
     # -------------------------
     # Relatórios
@@ -710,16 +737,18 @@ if session_is_logged_in():
             if not rems_month:
                 st.info("Nenhuma remessa neste mês para este cliente.")
             else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems_month}
+                map_label_to_rem = {f'{r["remessa_key"]} (nº {r.get("numero") or r.get("numero_remessa")}, id {r["id"]})': r for r in rems_month}
                 rem_label = st.selectbox("Escolha uma remessa para detalhar", list(map_label_to_rem.keys()), key="pay_rem")
                 rem = map_label_to_rem[rem_label]
 
                 up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
                 ups = _resp_data(up_resp)
+
+                # pega apenas envios
                 envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
 
                 if not envios_files:
-                    st.warning("Esta remessa ainda não tem CSV de **envios**. Faça upload em Uploads (CSV).")
+                    st.warning("Esta remessa ainda não tem CSV de **envios**. (Se você salvou errado como 'botoes', use Uploads → Correções rápidas.)")
                 else:
                     envios_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
                     env_u = envios_files[0]
@@ -745,33 +774,23 @@ if session_is_logged_in():
                             c3.metric("Undelivered (não cobra)", f"{qty_undelivered}")
                             c4.metric("Unitário (R$)", f"{unit:.2f}")
 
-                            st.success(
-                                f"Total da remessa (estimado): **R$ {total:,.2f}**"
-                                .replace(",", "X").replace(".", ",").replace("X", ".")
-                            )
-
-                            st.caption(f"Leitura CSV: delimitador detectado = '{metrics.get('delimiter')}', coluna status = '{metrics.get('status_col')}'")
+                            st.success(f"Total da remessa (estimado): **R$ {total:,.2f}**".replace(",", "X").replace(".", ",").replace("X", "."))
 
                             st.write("**Por status (encontrados no CSV):**")
                             by_status = metrics["by_status"]
                             if by_status:
                                 st.dataframe(
-                                    [{"status": k, "qtd": v} for k, v in sorted(by_status.items(), key=lambda x: (-x[1], x[0]))],
-                                    use_container_width=True
+                                    [{"status": k, "qtd": v} for k, v in sorted(by_status.items(), key=lambda x: x[0])],
+                                    use_container_width=True,
+                                    hide_index=True
                                 )
                             else:
-                                st.info("Não encontrei status (coluna não detectada ou arquivo vazio).")
+                                st.info("Não encontrei valores de status (ou coluna de status não foi detectada).")
 
                             nxt = next_tier(plano_tipo, qty_billable)
                             if nxt:
                                 a, b, p = nxt
-                                current_unit = unit
-                                if p < current_unit:
-                                    st.warning(
-                                        f"💡 Próxima faixa reduz o unitário para **R$ {p:.2f}** ao atingir **{a} cobráveis**."
-                                    )
-                                else:
-                                    st.info(f"Próxima faixa começa em {a} cobráveis (unitário R$ {p:.2f}).")
+                                st.info(f"Próxima faixa começa em {a} cobráveis (unitário R$ {p:.2f}).")
                             else:
                                 st.info("Você já está na última faixa de preço.")
 
@@ -791,6 +810,7 @@ if session_is_logged_in():
                     up_resp = db_list_uploads(remessa_id=r["id"], limit=200)
                     ups = _resp_data(up_resp)
                     envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
+
                     if not envios_files:
                         rows_out.append({
                             "remessa_key": r.get("remessa_key"),
@@ -842,11 +862,10 @@ if session_is_logged_in():
                             "obs": "erro ao ler CSV",
                         })
 
-                st.dataframe(rows_out, use_container_width=True)
+                st.dataframe(rows_out, use_container_width=True, hide_index=True)
 
                 st.success(
-                    f"Total do mês (estimado): **R$ {total_month:,.2f}**"
-                    .replace(",", "X").replace(".", ",").replace("X", ".")
+                    f"Total do mês (estimado): **R$ {total_month:,.2f}**".replace(",", "X").replace(".", ",").replace("X", ".")
                 )
 
                 if plano_tipo == "pre":
@@ -888,6 +907,9 @@ if session_is_logged_in():
                                 st.stop()
                             if not (razao or "").strip():
                                 st.warning("Informe a Razão Social.")
+                                st.stop()
+                            if not (contato_email or "").strip():
+                                st.warning("Informe o e-mail do contato (é usado como email_principal).")
                                 st.stop()
 
                             db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo)
@@ -948,7 +970,8 @@ if session_is_logged_in():
                             "plano_tipo": x.get("plano_tipo"),
                             "ativo": x.get("ativo"),
                         } for x in clientes],
-                        use_container_width=True
+                        use_container_width=True,
+                        hide_index=True
                     )
 
             # ---- Valores remuneração (faixas)
