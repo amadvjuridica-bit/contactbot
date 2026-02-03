@@ -35,6 +35,72 @@ UPLOADS_BUCKET = "contactbot-uploads"
 ADMIN_EMAIL = "amadvjuridica@gmail.com"
 
 # =========================
+# Estilo (cinza/azul) - leve e profissional
+# =========================
+st.markdown(
+    """
+<style>
+/* Layout geral */
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+h1, h2, h3 { letter-spacing: -0.3px; }
+small, .stCaption { color: rgba(255,255,255,0.75) !important; }
+[data-testid="stMetricValue"] { font-weight: 700; }
+
+/* Botões: azul */
+.stButton>button {
+    border-radius: 10px;
+    border: 1px solid rgba(59,130,246,0.35);
+}
+.stButton>button[kind="primary"] {
+    background: rgb(59,130,246) !important;
+    border: 1px solid rgba(59,130,246,0.55) !important;
+}
+.stButton>button:hover {
+    filter: brightness(1.05);
+}
+
+/* Dataframes */
+[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
+
+/* Caixas */
+.stAlert { border-radius: 12px; }
+</style>
+""",
+    unsafe_allow_html=True
+)
+
+# =========================
+# Formatação BR
+# =========================
+def fmt_int_br(n: int | None) -> str:
+    if n is None:
+        return "-"
+    try:
+        return f"{int(n):,}".replace(",", ".")
+    except Exception:
+        return str(n)
+
+def fmt_money_br(v: float | None) -> str:
+    if v is None:
+        return "-"
+    try:
+        s = f"{float(v):,.2f}"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {s}"
+    except Exception:
+        return f"R$ {v}"
+
+def fmt_float2_br(v: float | None) -> str:
+    if v is None:
+        return "-"
+    try:
+        s = f"{float(v):,.2f}"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return s
+    except Exception:
+        return str(v)
+
+# =========================
 # Faixas padrão (fallback)
 # =========================
 DEFAULT_TIERS = {
@@ -192,19 +258,6 @@ def parse_csv_preview(data: bytes, max_rows: int = 30):
             break
     return headers, rows
 
-def fmt_int_ptbr(n: int | None) -> str:
-    if n is None:
-        return ""
-    try:
-        return f"{int(n):,}".replace(",", ".")
-    except Exception:
-        return str(n)
-
-def fmt_money_ptbr(v: float) -> str:
-    s = f"{v:,.2f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"R$ {s}"
-
 # =========================
 # DB helpers
 # =========================
@@ -216,37 +269,39 @@ def db_list_clientes():
 
 def db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo):
     slug = slugify(razao)
-    return supabase_admin.table("clientes").insert({
-        "cnpj": cnpj.strip(),
-        "razao_social": razao.strip(),
+    payload = {
+        "cnpj": (cnpj or "").strip(),
+        "razao_social": (razao or "").strip(),
         "slug": slug,
         "contato_nome": (contato_nome or "").strip() or None,
         "contato_email": (contato_email or "").strip() or None,
         "contato_whatsapp": (contato_whatsapp or "").strip() or None,
         "plano_tipo": plano_tipo,   # "pos" ou "pre"
         "ativo": True
-    }).execute()
+    }
+    return supabase_admin.table("clientes").insert(payload).execute()
 
 def db_update_cliente(cliente_id, payload: dict):
     return supabase_admin.table("clientes").update(payload).eq("id", cliente_id).execute()
 
 def db_list_remessas(cliente_id=None, limit=100):
-    q = supabase_admin.table("remessas").select("*").order("data", desc=True).order("numero_remessa", desc=True).limit(limit)
+    q = supabase_admin.table("remessas").select("*").order("data", desc=True).order("numero", desc=True).limit(limit)
     if cliente_id:
         q = q.eq("cliente_id", cliente_id)
     return q.execute()
 
 def db_insert_remessa(cliente_id, numero_remessa, data_remessa, remessa_key, observacao=None):
+    # OBS: sua tabela usa "numero" (não numero_remessa), e "remessa_key"
     return supabase_admin.table("remessas").insert({
         "cliente_id": cliente_id,
-        "numero_remessa": int(numero_remessa),
+        "numero": int(numero_remessa),
         "data": str(data_remessa),
         "remessa_key": remessa_key,
         "status": "aguardando_upload",
         "observacao": (observacao or "").strip() or None
     }).execute()
 
-def db_update_remessa_status(remessa_id: int, status: str):
+def db_update_remessa_status(remessa_id: str, status: str):
     return supabase_admin.table("remessas").update({"status": status}).eq("id", remessa_id).execute()
 
 def db_insert_upload_record(user_id, user_email, file_name, bucket, path, size_bytes, sha256, remessa_id, file_tipo):
@@ -256,13 +311,13 @@ def db_insert_upload_record(user_id, user_email, file_name, bucket, path, size_b
         "file_name": file_name,
         "storage_bucket": bucket,
         "storage_path": path,
-        "size_bytes": size_bytes,
+        "size_bytes": int(size_bytes),
         "sha256": sha256,
         "remessa_id": remessa_id,
         "file_tipo": file_tipo
     }).execute()
 
-def db_list_uploads(remessa_id=None, limit=100):
+def db_list_uploads(remessa_id=None, limit=200):
     q = supabase_admin.table("uploads").select("*").order("created_at", desc=True).limit(limit)
     if remessa_id:
         q = q.eq("remessa_id", remessa_id)
@@ -356,10 +411,18 @@ def fetch_bytes_from_signed_url(url: str) -> bytes:
     return r.content
 
 # =========================
-# Parse Envios CSV -> métricas
+# Parse Envios CSV -> métricas (robusto)
 # =========================
+def infer_delimiter(sample_text: str) -> str:
+    try:
+        dialect = csv.Sniffer().sniff(sample_text, delimiters=";,\t|")
+        return dialect.delimiter
+    except Exception:
+        # default mais comum no seu exemplo
+        return ";"
+
 def infer_status_column(headers: list[str]) -> str | None:
-    candidates = ["status", "situacao", "estado", "resultado", "delivery_status", "message_status"]
+    candidates = ["message_status", "status", "situacao", "estado", "resultado", "delivery_status"]
     lowered = {h.lower(): h for h in headers}
     for c in candidates:
         if c in lowered:
@@ -369,27 +432,11 @@ def infer_status_column(headers: list[str]) -> str | None:
             return h
     return None
 
-def infer_delimiter_from_sample(text: str) -> str:
-    # Heurística simples: se tem ';' frequente, usa ';', senão ','
-    sample = text[:5000]
-    semicolons = sample.count(";")
-    commas = sample.count(",")
-    return ";" if semicolons > commas else ","
-
-def _row_is_blank(row: dict) -> bool:
-    # linha vazia = todos os valores vazios/None
-    if not row:
-        return True
-    for v in row.values():
-        if v is None:
-            continue
-        if str(v).strip() != "":
-            return False
-    return True
-
 def compute_envios_metrics(csv_bytes: bytes):
     text = csv_bytes.decode("utf-8", errors="replace")
-    delim = infer_delimiter_from_sample(text)
+    # pega amostra pro delimiter
+    sample = text[:5000]
+    delim = infer_delimiter(sample)
 
     f = io.StringIO(text)
     reader = csv.DictReader(f, delimiter=delim)
@@ -406,8 +453,8 @@ def compute_envios_metrics(csv_bytes: bytes):
     }
 
     for row in reader:
-        # ✅ CORREÇÃO: ignora linhas em branco do arquivo
-        if _row_is_blank(row):
+        # Ignora linhas realmente vazias (todas as colunas vazias)
+        if not row or all((str(v).strip() == "" for v in row.values())):
             continue
 
         counts["total_rows"] += 1
@@ -423,7 +470,7 @@ def compute_envios_metrics(csv_bytes: bytes):
             elif status in BILLABLE_STATUSES:
                 counts["billable"] += 1
             else:
-                # status desconhecido: por segurança NÃO cobra
+                # desconhecido -> não cobra
                 pass
 
     return counts
@@ -480,7 +527,7 @@ if session_is_logged_in():
     # Dashboard
     # -------------------------
     with tabs[0]:
-        st.info("Dashboard será preenchido com KPIs depois que Remuneração + Relatórios estiverem consolidados.")
+        st.info("Dashboard será preenchido com KPIs depois que Relatórios + envio por e-mail estiverem completos.")
 
     # -------------------------
     # Uploads (CSV)
@@ -508,7 +555,7 @@ if session_is_logged_in():
             if not rems:
                 st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
             else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems}
+                map_label_to_rem = {f'{r["remessa_key"]} (nº {r.get("numero")}, id {r["id"]})': r for r in rems}
                 rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem")
                 rem = map_label_to_rem[rem_label]
 
@@ -521,7 +568,7 @@ if session_is_logged_in():
                     size_bytes = len(data)
                     digest = sha256_hex(data)
 
-                    st.caption(f"Arquivo: **{file_name}** | {fmt_int_ptbr(size_bytes)} bytes | SHA256 `{digest[:16]}...`")
+                    st.caption(f"Arquivo: **{file_name}** | {fmt_int_br(size_bytes)} bytes | SHA256 `{digest[:16]}...`")
 
                     try:
                         headers, rows = parse_csv_preview(data, max_rows=30)
@@ -570,7 +617,7 @@ if session_is_logged_in():
                         "created_at": u.get("created_at"),
                         "tipo": u.get("file_tipo"),
                         "file_name": u.get("file_name"),
-                        "size_bytes": fmt_int_ptbr(u.get("size_bytes")),
+                        "size_bytes": fmt_int_br(u.get("size_bytes")),
                         "storage_path": u.get("storage_path"),
                     } for u in ups], use_container_width=True)
 
@@ -623,16 +670,175 @@ if session_is_logged_in():
                 st.dataframe([{
                     "id": r.get("id"),
                     "data": r.get("data"),
-                    "numero": r.get("numero_remessa"),
+                    "numero": r.get("numero"),
                     "remessa_key": r.get("remessa_key"),
                     "status": r.get("status"),
                 } for r in rems], use_container_width=True)
 
     # -------------------------
-    # Relatórios
+    # Relatórios (NOVO - próximo passo)
     # -------------------------
     with tabs[3]:
-        st.info("Relatórios (sintético + analítico + PDF) será o próximo passo após o fechamento da Remuneração e configuração do e-mail.")
+        st.write("### Relatórios")
+        st.caption("Relatório Sintético + Analítico por remessa. Download em CSV. (Envio por e-mail entra no próximo passo.)")
+
+        clientes_resp = db_list_clientes()
+        clientes = _resp_data(clientes_resp)
+
+        if not clientes:
+            st.warning("Sem clientes cadastrados.")
+        else:
+            map_label_to_cliente = {f'{c["razao_social"]} ({c["slug"]})': c for c in clientes}
+            cliente_label = st.selectbox("Cliente", list(map_label_to_cliente.keys()), key="rep_cli")
+            cliente = map_label_to_cliente[cliente_label]
+            plano_tipo = cliente.get("plano_tipo", "pos")
+
+            rem_resp = db_list_remessas(cliente_id=cliente["id"], limit=300)
+            rems = _resp_data(rem_resp) or []
+
+            if not rems:
+                st.info("Nenhuma remessa para este cliente ainda.")
+            else:
+                map_label_to_rem = {f'{r["remessa_key"]} (nº {r.get("numero")}, {r.get("data")})': r for r in rems}
+                rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="rep_rem")
+                rem = map_label_to_rem[rem_label]
+
+                up_resp = db_list_uploads(remessa_id=rem["id"], limit=200)
+                ups = _resp_data(up_resp) or []
+
+                envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
+                botoes_files = [u for u in ups if u.get("file_tipo") == "botoes"]
+                base_files = [u for u in ups if u.get("file_tipo") == "base"]
+
+                st.divider()
+
+                # --------
+                # Sintético (usa envios)
+                # --------
+                st.subheader("Relatório Sintético")
+                if not envios_files:
+                    st.warning("Esta remessa não tem CSV de **envios** ainda.")
+                else:
+                    envios_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+                    env_u = envios_files[0]
+                    url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+
+                    if not url:
+                        st.error("Não consegui gerar link assinado para baixar o CSV de envios.")
+                    else:
+                        csv_bytes = fetch_bytes_from_signed_url(url)
+                        metrics = compute_envios_metrics(csv_bytes)
+
+                        qty_total = metrics["total_rows"]
+                        qty_billable = metrics["billable"]
+                        qty_undelivered = metrics["undelivered"]
+
+                        unit = tier_price(plano_tipo, qty_billable)
+                        total = qty_billable * unit
+
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Total linhas", fmt_int_br(qty_total))
+                        c2.metric("Cobráveis", fmt_int_br(qty_billable))
+                        c3.metric("Undelivered (não cobra)", fmt_int_br(qty_undelivered))
+                        c4.metric("Unitário", fmt_money_br(unit))
+
+                        st.success(f"Total da remessa (estimado): **{fmt_money_br(total)}**")
+
+                        st.caption(f"Coluna de status detectada: {metrics['status_col']} | Delimitador: {metrics['delimiter']}")
+
+                        # Analítico por status
+                        st.subheader("Relatório Analítico (por status)")
+                        by_status = metrics["by_status"] or {}
+                        rows_status = [{"status": k, "qtd": v} for k, v in sorted(by_status.items(), key=lambda x: x[0])]
+                        st.dataframe(
+                            [{"status": r["status"], "qtd": fmt_int_br(r["qtd"])} for r in rows_status],
+                            use_container_width=True
+                        )
+
+                        nxt = next_tier(plano_tipo, qty_billable)
+                        if nxt:
+                            a, b, p = nxt
+                            st.info(f"Próxima faixa começa em **{fmt_int_br(a)}** cobráveis (unitário {fmt_money_br(p)}).")
+
+                        # Downloads CSV (sintético + status)
+                        st.divider()
+                        st.write("### Downloads (CSV)")
+
+                        # CSV sintético
+                        out_sint = io.StringIO()
+                        w = csv.writer(out_sint, delimiter=";")
+                        w.writerow(["cliente", "cnpj", "plano", "remessa_key", "data", "numero", "total_linhas", "cobraveis", "undelivered", "unitario", "total_remessa"])
+                        w.writerow([
+                            cliente.get("razao_social"),
+                            cliente.get("cnpj"),
+                            plano_tipo,
+                            rem.get("remessa_key"),
+                            rem.get("data"),
+                            rem.get("numero"),
+                            qty_total,
+                            qty_billable,
+                            qty_undelivered,
+                            f"{unit:.2f}",
+                            f"{total:.2f}",
+                        ])
+                        st.download_button(
+                            "⬇️ Baixar CSV (Sintético)",
+                            data=out_sint.getvalue().encode("utf-8"),
+                            file_name=f"Relatorio_Sintetico_{rem.get('remessa_key')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+
+                        # CSV status
+                        out_st = io.StringIO()
+                        w2 = csv.writer(out_st, delimiter=";")
+                        w2.writerow(["remessa_key", "status", "qtd"])
+                        for r in rows_status:
+                            w2.writerow([rem.get("remessa_key"), r["status"], r["qtd"]])
+
+                        st.download_button(
+                            "⬇️ Baixar CSV (Status)",
+                            data=out_st.getvalue().encode("utf-8"),
+                            file_name=f"Relatorio_Status_{rem.get('remessa_key')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+
+                # --------
+                # Baixar originais
+                # --------
+                st.divider()
+                st.subheader("Arquivos originais da remessa")
+                st.caption("Aqui é só entrega/consulta. Não entra em remuneração.")
+
+                def render_download_list(files: list[dict], label: str):
+                    st.write(f"**{label}**")
+                    if not files:
+                        st.write("—")
+                        return
+                    files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+                    for fmeta in files[:5]:
+                        fname = fmeta.get("file_name") or "arquivo.csv"
+                        path = fmeta.get("storage_path")
+                        url = storage_signed_url(UPLOADS_BUCKET, path, expires_in=3600) if path else ""
+                        if not url:
+                            st.write(f"- {fname} (sem link)")
+                            continue
+                        try:
+                            b = fetch_bytes_from_signed_url(url)
+                            st.download_button(
+                                f"⬇️ Baixar {fname}",
+                                data=b,
+                                file_name=fname,
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                        except Exception:
+                            st.write(f"- {fname} (falha ao baixar)")
+
+                render_download_list(envios_files, "Envios")
+                render_download_list(botoes_files, "Botões")
+                render_download_list(base_files, "Base")
 
     # -------------------------
     # Remuneração (somente ENVIO; botões NÃO entram)
@@ -680,7 +886,7 @@ if session_is_logged_in():
             if not rems_month:
                 st.info("Nenhuma remessa neste mês para este cliente.")
             else:
-                map_label_to_rem = {f'{r["remessa_key"]} (id {r["id"]})': r for r in rems_month}
+                map_label_to_rem = {f'{r["remessa_key"]} (nº {r.get("numero")}, id {r["id"]})': r for r in rems_month}
                 rem_label = st.selectbox("Escolha uma remessa para detalhar", list(map_label_to_rem.keys()), key="pay_rem")
                 rem = map_label_to_rem[rem_label]
 
@@ -710,36 +916,29 @@ if session_is_logged_in():
                             total = qty_billable * unit
 
                             c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("Total linhas", fmt_int_ptbr(qty_total))
-                            c2.metric("Cobráveis", fmt_int_ptbr(qty_billable))
-                            c3.metric("Undelivered (não cobra)", fmt_int_ptbr(qty_undelivered))
-                            c4.metric("Unitário", fmt_money_ptbr(unit))
+                            c1.metric("Total linhas", fmt_int_br(qty_total))
+                            c2.metric("Cobráveis", fmt_int_br(qty_billable))
+                            c3.metric("Undelivered (não cobra)", fmt_int_br(qty_undelivered))
+                            c4.metric("Unitário", fmt_money_br(unit))
 
-                            st.success(f"Total da remessa (estimado): **{fmt_money_ptbr(total)}**")
+                            st.success(f"Total da remessa (estimado): **{fmt_money_br(total)}**")
 
-                            st.caption(f"Coluna de status detectada: {metrics.get('status_col') or '(não detectada)'} | Delimitador: `{metrics.get('delimiter')}`")
+                            st.caption(f"Coluna de status detectada: {metrics['status_col']} | Delimitador: {metrics['delimiter']}")
 
                             st.write("**Por status (encontrados no CSV):**")
                             by_status = metrics["by_status"]
                             if by_status:
-                                # ✅ CORREÇÃO: mostrar com ponto de milhar
-                                rows_status = [{"status": k, "qtd": fmt_int_ptbr(v)} for k, v in sorted(by_status.items(), key=lambda x: x[0])]
-                                st.dataframe(rows_status, use_container_width=True)
+                                st.dataframe(
+                                    [{"status": k, "qtd": fmt_int_br(v)} for k, v in sorted(by_status.items(), key=lambda x: x[0])],
+                                    use_container_width=True
+                                )
                             else:
                                 st.info("Não encontrei valores de status (ou coluna de status não foi detectada).")
 
                             nxt = next_tier(plano_tipo, qty_billable)
                             if nxt:
                                 a, b, p = nxt
-                                current_unit = unit
-                                if p < current_unit:
-                                    st.info(
-                                        f"Próxima faixa começa em **{fmt_int_ptbr(a)}** cobráveis (unitário {fmt_money_ptbr(p)})."
-                                    )
-                                else:
-                                    st.info(f"Próxima faixa começa em {fmt_int_ptbr(a)} cobráveis (unitário {fmt_money_ptbr(p)}).")
-                            else:
-                                st.info("Você já está na última faixa de preço.")
+                                st.info(f"Próxima faixa começa em **{fmt_int_br(a)}** cobráveis (unitário {fmt_money_br(p)}).")
 
                         except Exception as e:
                             st.error(f"Falha ao ler/interpretar o CSV de envios: {e}")
@@ -761,9 +960,9 @@ if session_is_logged_in():
                         rows_out.append({
                             "remessa": r.get("remessa_key"),
                             "data": r.get("data"),
-                            "cobráveis": "",
-                            "unit": "",
-                            "total": "",
+                            "cobráveis": "-",
+                            "unit": "-",
+                            "total": "-",
                             "obs": "sem CSV envios",
                         })
                         continue
@@ -775,9 +974,9 @@ if session_is_logged_in():
                         rows_out.append({
                             "remessa": r.get("remessa_key"),
                             "data": r.get("data"),
-                            "cobráveis": "",
-                            "unit": "",
-                            "total": "",
+                            "cobráveis": "-",
+                            "unit": "-",
+                            "total": "-",
                             "obs": "sem link assinado",
                         })
                         continue
@@ -793,23 +992,23 @@ if session_is_logged_in():
                         rows_out.append({
                             "remessa": r.get("remessa_key"),
                             "data": r.get("data"),
-                            "cobráveis": fmt_int_ptbr(qty_billable),
-                            "unit": fmt_money_ptbr(unit),
-                            "total": fmt_money_ptbr(tot),
+                            "cobráveis": fmt_int_br(qty_billable),
+                            "unit": fmt_money_br(unit),
+                            "total": fmt_money_br(tot),
                             "obs": "",
                         })
                     except Exception:
                         rows_out.append({
                             "remessa": r.get("remessa_key"),
                             "data": r.get("data"),
-                            "cobráveis": "",
-                            "unit": "",
-                            "total": "",
+                            "cobráveis": "-",
+                            "unit": "-",
+                            "total": "-",
                             "obs": "erro ao ler CSV",
                         })
 
                 st.dataframe(rows_out, use_container_width=True)
-                st.success(f"Total do mês (estimado): **{fmt_money_ptbr(total_month)}**")
+                st.success(f"Total do mês (estimado): **{fmt_money_br(total_month)}**")
 
                 if plano_tipo == "pre":
                     st.info("Pré-pago: no próximo passo entraremos com SALDO, validade de 30 dias, bloqueio ao zerar e recarga (PIX depois).")
@@ -850,6 +1049,9 @@ if session_is_logged_in():
                                 st.stop()
                             if not (razao or "").strip():
                                 st.warning("Informe a Razão Social.")
+                                st.stop()
+                            if not (contato_email or "").strip():
+                                st.warning("Informe o e-mail do contato do cliente.")
                                 st.stop()
 
                             db_insert_cliente(cnpj, razao, contato_nome, contato_email, contato_whatsapp, plano_tipo)
@@ -961,8 +1163,8 @@ if session_is_logged_in():
                         pr = float(r.get("unit_price") or 0.0)
                         ativo = bool(r.get("ativo", True))
 
-                        label = f"DE {fmt_int_ptbr(mn)} A {fmt_int_ptbr(mx)}" if mx < 10**11 else f"ACIMA DE {fmt_int_ptbr(mn)}"
-                        with st.expander(f"{label}  →  {fmt_money_ptbr(pr)}", expanded=False):
+                        label = f"DE {fmt_int_br(mn)} A {fmt_int_br(mx)}" if mx < 10**11 else f"ACIMA DE {fmt_int_br(mn)}"
+                        with st.expander(f"{label}  →  {fmt_money_br(pr)}", expanded=False):
                             c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
                             with c1:
                                 st.number_input("Min", value=mn, step=1, disabled=True, key=f"{plan_tipo}_mn_{r['id']}")
@@ -986,17 +1188,18 @@ if session_is_logged_in():
                 render_tiers("pre", "PRÉ-PAGO")
 
                 st.divider()
-                st.caption("Obs: Remuneração do app já usa essas faixas se existirem/estiverem ativas. Se não existir, cai no padrão (não quebra).")
+                st.caption("Obs: Remuneração do app usa essas faixas se existirem/estiverem ativas. Se não existir, cai no padrão.")
 
-            # ---- E-mail config
+            # ---- E-mail config (porta 465 SSL)
             with sec[2]:
                 st.write("#### E-mail (SMTP) — envio automático para clientes")
-                st.caption("Preencha aqui. No próximo passo vamos gerar e enviar automaticamente com base nos relatórios.")
+                st.caption("Use porta 465 (SSL direto), como você confirmou. Aqui só salva config (não envia ainda).")
 
+                # Protege contra instabilidade httpx.ReadError: não derruba o app
                 try:
                     existing = _resp_data(db_get_email_config())
                 except Exception as e:
-                    st.error(f"Erro ao ler email_config: {e}")
+                    st.error(f"Falha ao ler email_config (instabilidade momentânea). Tente recarregar a página. Detalhe: {e}")
                     existing = []
 
                 row = existing[0] if existing else {}
@@ -1006,7 +1209,8 @@ if session_is_logged_in():
                 smtp_port = st.number_input("SMTP Port", value=int(row.get("smtp_port") or 465), step=1, key="em_port")
                 smtp_user = st.text_input("SMTP User", value=row.get("smtp_user") or "", key="em_user")
                 smtp_pass = st.text_input("SMTP Pass", value=row.get("smtp_pass") or "", type="password", key="em_pass")
-                smtp_tls = st.checkbox("TLS", value=bool(row.get("smtp_tls", False)), key="em_tls")
+
+                st.caption("Porta 465 = SSL direto. (No próximo passo, o envio usará SSL automaticamente.)")
 
                 from_name = st.text_input("From Name", value=row.get("from_name") or "ContactBot", key="em_from_name")
                 from_email = st.text_input("From E-mail", value=row.get("from_email") or "", key="em_from_email")
@@ -1019,17 +1223,28 @@ if session_is_logged_in():
                     key="em_body"
                 )
 
-                st.caption("Porta 465 é SSL direto. Nesse caso, normalmente TLS fica desligado (como acima).")
-
                 if st.button("Salvar configurações de e-mail", use_container_width=True):
                     try:
+                        if not smtp_host.strip():
+                            st.warning("Preencha o SMTP Host.")
+                            st.stop()
+                        if not smtp_user.strip():
+                            st.warning("Preencha o SMTP User.")
+                            st.stop()
+                        if not smtp_pass.strip():
+                            st.warning("Preencha o SMTP Pass.")
+                            st.stop()
+                        if not from_email.strip():
+                            st.warning("Preencha o From E-mail.")
+                            st.stop()
+
                         db_upsert_email_config({
                             "is_active": bool(is_active),
                             "smtp_host": (smtp_host or "").strip() or None,
                             "smtp_port": int(smtp_port),
                             "smtp_user": (smtp_user or "").strip() or None,
                             "smtp_pass": (smtp_pass or "").strip() or None,
-                            "smtp_tls": bool(smtp_tls),
+                            "smtp_tls": False,  # com 465 (SSL), não usamos TLS starttls
                             "from_name": (from_name or "").strip() or None,
                             "from_email": (from_email or "").strip() or None,
                             "template_assunto": (template_assunto or "").strip() or None,
@@ -1043,9 +1258,14 @@ if session_is_logged_in():
             # ---- Mercado Pago config
             with sec[3]:
                 st.write("#### PIX (Mercado Pago)")
-                st.caption("Aqui ficam as chaves e webhook. No próximo passo vamos criar a rotina de gerar PIX de recarga no pré-pago.")
+                st.caption("Aqui ficam as chaves e webhook. No próximo passo vamos gerar PIX de recarga no pré-pago.")
 
-                existing = _resp_data(db_get_mercadopago_config())
+                try:
+                    existing = _resp_data(db_get_mercadopago_config())
+                except Exception as e:
+                    st.error(f"Falha ao ler mercadopago_config (instabilidade). Detalhe: {e}")
+                    existing = []
+
                 row = existing[0] if existing else {}
 
                 mp_active = st.checkbox("Ativar integração Mercado Pago", value=bool(row.get("is_active", False)), key="mp_active")
