@@ -886,79 +886,79 @@ if session_is_logged_in():
 
             if not go:
                 st.info("Selecione cliente/mês/ano e clique em **Confirmar e carregar**.")
-                st.stop()
-
-            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
-
-            def in_month(r):
-                try:
-                    d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
-                    return d.year == int(year) and d.month == int(month)
-                except Exception:
-                    return False
-
-            rems_month = [r for r in rems if in_month(r)]
-
-            total_billable_month = 0
-            total_value_month = 0.0
-            rows_month = []
-
-            for r in rems_month:
-                ups = _resp_data(db_list_uploads(remessa_id=r["id"], limit=200)) or []
-                envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
-                if not envios_files:
-                    continue
-                envios_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-                env_u = envios_files[0]
-                url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-                if not url:
-                    continue
-                csv_bytes = fetch_bytes_from_signed_url(url)
-                metrics = compute_envios_metrics(csv_bytes)
-
-                qty_billable = int(metrics["billable"])
-                unit = tier_price(plano_tipo, qty_billable)
-                tot = qty_billable * unit
-
-                total_billable_month += qty_billable
-                total_value_month += tot
-
-                rows_month.append({
-                    "remessa": remessa_get_key(r),
-                    "data": r.get("data"),
-                    "cobráveis": qty_billable,
-                    "unit": unit,
-                    "total": tot
-                })
-
-            cA, cB, cC, cD = st.columns(4)
-            cA.metric("Remessas no mês", fmt_int(len(rems_month)))
-            cB.metric("Cobráveis (mês)", fmt_int(total_billable_month))
-            cC.metric("Acumulado (mês)", fmt_money(total_value_month))
-            a, b, p = current_tier(plano_tipo, total_billable_month if total_billable_month > 0 else (1 if plano_tipo == "pos" else 1000))
-            cD.metric("Faixa (referência mês)", f"{fmt_money(p)}")
-
-            nxt = next_tier(plano_tipo, total_billable_month)
-            if nxt:
-                na, nb, np = nxt
-                falta = max(na - total_billable_month, 0)
-                st.info(f"Para atingir a próxima faixa do mês ({fmt_money(np)}), faltam **{fmt_int(falta)}** cobráveis.")
             else:
-                st.info("Você já está na última faixa de preço.")
-
-            st.divider()
-            st.write("#### Resumo por campanha (mês)")
-            if not rows_month:
-                st.info("Sem remessas com CSV de envios neste mês.")
-            else:
-                st.dataframe([{
-                    "remessa": x["remessa"],
-                    "data": x["data"],
-                    "cobráveis": fmt_int(x["cobráveis"]),
-                    "unitário": fmt_money(x["unit"]),
-                    "total": fmt_money(x["total"]),
-                } for x in rows_month], use_container_width=True)
-
+                
+                rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
+                
+                def in_month(r):
+                    try:
+                        d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
+                        return d.year == int(year) and d.month == int(month)
+                    except Exception:
+                        return False
+                
+                rems_month = [r for r in rems if in_month(r)]
+                
+                total_billable_month = 0
+                total_value_month = 0.0
+                rows_month = []
+                
+                for r in rems_month:
+                    ups = _resp_data(db_list_uploads(remessa_id=r["id"], limit=200)) or []
+                    envios_files = [u for u in ups if u.get("file_tipo") == "envios"]
+                    if not envios_files:
+                        continue
+                    envios_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+                    env_u = envios_files[0]
+                    url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                    if not url:
+                        continue
+                    csv_bytes = fetch_bytes_from_signed_url(url)
+                    metrics = compute_envios_metrics(csv_bytes)
+                
+                    qty_billable = int(metrics["billable"])
+                    unit = tier_price(plano_tipo, qty_billable)
+                    tot = qty_billable * unit
+                
+                    total_billable_month += qty_billable
+                    total_value_month += tot
+                
+                    rows_month.append({
+                        "remessa": remessa_get_key(r),
+                        "data": r.get("data"),
+                        "cobráveis": qty_billable,
+                        "unit": unit,
+                        "total": tot
+                    })
+                
+                cA, cB, cC, cD = st.columns(4)
+                cA.metric("Remessas no mês", fmt_int(len(rems_month)))
+                cB.metric("Cobráveis (mês)", fmt_int(total_billable_month))
+                cC.metric("Acumulado (mês)", fmt_money(total_value_month))
+                a, b, p = current_tier(plano_tipo, total_billable_month if total_billable_month > 0 else (1 if plano_tipo == "pos" else 1000))
+                cD.metric("Faixa (referência mês)", f"{fmt_money(p)}")
+                
+                nxt = next_tier(plano_tipo, total_billable_month)
+                if nxt:
+                    na, nb, np = nxt
+                    falta = max(na - total_billable_month, 0)
+                    st.info(f"Para atingir a próxima faixa do mês ({fmt_money(np)}), faltam **{fmt_int(falta)}** cobráveis.")
+                else:
+                    st.info("Você já está na última faixa de preço.")
+                
+                st.divider()
+                st.write("#### Resumo por campanha (mês)")
+                if not rows_month:
+                    st.info("Sem remessas com CSV de envios neste mês.")
+                else:
+                    st.dataframe([{
+                        "remessa": x["remessa"],
+                        "data": x["data"],
+                        "cobráveis": fmt_int(x["cobráveis"]),
+                        "unitário": fmt_money(x["unit"]),
+                        "total": fmt_money(x["total"]),
+                    } for x in rows_month], use_container_width=True)
+                
         # ============================================================
         # CLIENTE — Relatórios
         # ============================================================
@@ -985,98 +985,98 @@ if session_is_logged_in():
             )
             if not go:
                 st.info("Selecione e clique em **Confirmar e carregar**.")
-                st.stop()
-
-            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
-
-            def in_month(r):
-                try:
-                    d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
-                    return d.year == int(year) and d.month == int(month)
-                except Exception:
-                    return False
-
-            rems_month = [r for r in rems if in_month(r)]
-            if not rems_month:
-                st.info("Nenhuma remessa encontrada para este mês.")
-                st.stop()
-
-            map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
-            rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="cli_rep_rem")
-            rem = map_label_to_rem[rem_label]
-
-            go2 = confirm_block(
-                "Confirmar remessa",
-                "Clique para carregar downloads e o sintético por status desta remessa.",
-                "Carregar remessa",
-                "cli_reports_go2"
-            )
-            if not go2:
-                st.info("Selecione a remessa e clique em **Carregar remessa**.")
-                st.stop()
-
-            ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-            env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
-            bot_u = next((u for u in ups if u.get("file_tipo") == "botoes"), None)
-
-            st.write("#### Arquivos disponíveis para download")
-            d1, d2 = st.columns(2)
-            with d1:
-                if env_u:
-                    url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-                    if url:
-                        data = fetch_bytes_from_signed_url(url)
-                        st.download_button(
-                            "Baixar Envios (CSV)",
-                            data=data,
-                            file_name=env_u.get("file_name") or "envios.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning("Não foi possível gerar link para Envios.")
-                else:
-                    st.info("Envios não disponível nesta remessa.")
-            with d2:
-                if bot_u:
-                    url = storage_signed_url(UPLOADS_BUCKET, bot_u.get("storage_path"), expires_in=3600)
-                    if url:
-                        data = fetch_bytes_from_signed_url(url)
-                        st.download_button(
-                            "Baixar Botões (CSV)",
-                            data=data,
-                            file_name=bot_u.get("file_name") or "botoes.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning("Não foi possível gerar link para Botões.")
-                else:
-                    st.info("Botões não disponível nesta remessa.")
-
-            st.divider()
-            st.write("#### Sintético + distribuição por status (envios)")
-            if not env_u:
-                st.warning("Sem CSV de envios nesta remessa.")
             else:
-                url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-                csv_bytes = fetch_bytes_from_signed_url(url)
-                metrics = compute_envios_metrics(csv_bytes)
-
-                total_rows = int(metrics["total_rows"])
-                billable = int(metrics["billable"])
-                undelivered = int(metrics["undelivered"])
-                by_status = metrics["by_status"]
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total linhas", fmt_int(total_rows))
-                m2.metric("Cobráveis", fmt_int(billable))
-                m3.metric("Undelivered", fmt_int(undelivered))
-
-                st.caption(f"Coluna de status: {metrics['status_col']} | Delimitador: {metrics['delimiter']}")
-                st.write("**Percentual por status (sobre o total de linhas):**")
-                status_percent_block(by_status, total_rows)
-
+                
+                rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
+                
+                def in_month(r):
+                    try:
+                        d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
+                        return d.year == int(year) and d.month == int(month)
+                    except Exception:
+                        return False
+                
+                rems_month = [r for r in rems if in_month(r)]
+                if not rems_month:
+                    st.info("Nenhuma remessa encontrada para este mês.")
+                    st.stop()
+                
+                map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
+                rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="cli_rep_rem")
+                rem = map_label_to_rem[rem_label]
+                
+                go2 = confirm_block(
+                    "Confirmar remessa",
+                    "Clique para carregar downloads e o sintético por status desta remessa.",
+                    "Carregar remessa",
+                    "cli_reports_go2"
+                )
+                if not go2:
+                    st.info("Selecione a remessa e clique em **Carregar remessa**.")
+                    st.stop()
+                
+                ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+                env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
+                bot_u = next((u for u in ups if u.get("file_tipo") == "botoes"), None)
+                
+                st.write("#### Arquivos disponíveis para download")
+                d1, d2 = st.columns(2)
+                with d1:
+                    if env_u:
+                        url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                        if url:
+                            data = fetch_bytes_from_signed_url(url)
+                            st.download_button(
+                                "Baixar Envios (CSV)",
+                                data=data,
+                                file_name=env_u.get("file_name") or "envios.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                        else:
+                            st.warning("Não foi possível gerar link para Envios.")
+                    else:
+                        st.info("Envios não disponível nesta remessa.")
+                with d2:
+                    if bot_u:
+                        url = storage_signed_url(UPLOADS_BUCKET, bot_u.get("storage_path"), expires_in=3600)
+                        if url:
+                            data = fetch_bytes_from_signed_url(url)
+                            st.download_button(
+                                "Baixar Botões (CSV)",
+                                data=data,
+                                file_name=bot_u.get("file_name") or "botoes.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                        else:
+                            st.warning("Não foi possível gerar link para Botões.")
+                    else:
+                        st.info("Botões não disponível nesta remessa.")
+                
+                st.divider()
+                st.write("#### Sintético + distribuição por status (envios)")
+                if not env_u:
+                    st.warning("Sem CSV de envios nesta remessa.")
+                else:
+                    url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                    csv_bytes = fetch_bytes_from_signed_url(url)
+                    metrics = compute_envios_metrics(csv_bytes)
+                
+                    total_rows = int(metrics["total_rows"])
+                    billable = int(metrics["billable"])
+                    undelivered = int(metrics["undelivered"])
+                    by_status = metrics["by_status"]
+                
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Total linhas", fmt_int(total_rows))
+                    m2.metric("Cobráveis", fmt_int(billable))
+                    m3.metric("Undelivered", fmt_int(undelivered))
+                
+                    st.caption(f"Coluna de status: {metrics['status_col']} | Delimitador: {metrics['delimiter']}")
+                    st.write("**Percentual por status (sobre o total de linhas):**")
+                    status_percent_block(by_status, total_rows)
+                
         # ============================================================
         # CLIENTE — Remuneração
         # ============================================================
@@ -1104,124 +1104,124 @@ if session_is_logged_in():
             )
             if not go:
                 st.info("Selecione e clique em **Confirmar e carregar**.")
-                st.stop()
-
-            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
-
-            def in_month(r):
-                try:
-                    d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
-                    return d.year == int(year) and d.month == int(month)
-                except Exception:
-                    return False
-
-            rems_month = [r for r in rems if in_month(r)]
-            if not rems_month:
-                st.info("Nenhuma remessa neste mês.")
-                st.stop()
-
-            map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
-            rem_label = st.selectbox("Campanha (remessa)", list(map_label_to_rem.keys()), key="cli_pay_rem")
-            rem = map_label_to_rem[rem_label]
-
-            go2 = confirm_block(
-                "Confirmar campanha",
-                "Clique para calcular os valores desta campanha e o consolidado do mês.",
-                "Calcular remuneração",
-                "cli_pay_go2"
-            )
-            if not go2:
-                st.info("Selecione a campanha e clique em **Calcular remuneração**.")
-                st.stop()
-
-            ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-            env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
-
-            st.write("#### Por campanha (detalhado)")
-            if not env_u:
-                st.warning("Sem CSV de envios para esta campanha.")
             else:
-                url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-                csv_bytes = fetch_bytes_from_signed_url(url)
-                metrics = compute_envios_metrics(csv_bytes)
-
-                qty_total = int(metrics["total_rows"])
-                qty_billable = int(metrics["billable"])
-                qty_undel = int(metrics["undelivered"])
-                unit = tier_price(plano_tipo, qty_billable)
-                total = qty_billable * unit
-
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Total linhas", fmt_int(qty_total))
-                k2.metric("Cobráveis", fmt_int(qty_billable))
-                k3.metric("Undelivered", fmt_int(qty_undel))
-                k4.metric("Unitário", fmt_money(unit))
-
-                st.success(f"Total da campanha (estimado): **{fmt_money(total)}**")
-
-                nxt = next_tier(plano_tipo, qty_billable)
-                if nxt:
-                    a, b, p = nxt
-                    falta = max(a - qty_billable, 0)
-                    st.info(f"Para atingir a próxima faixa desta campanha ({fmt_money(p)}), faltam **{fmt_int(falta)}** cobráveis.")
+                
+                rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
+                
+                def in_month(r):
+                    try:
+                        d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
+                        return d.year == int(year) and d.month == int(month)
+                    except Exception:
+                        return False
+                
+                rems_month = [r for r in rems if in_month(r)]
+                if not rems_month:
+                    st.info("Nenhuma remessa neste mês.")
+                    st.stop()
+                
+                map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
+                rem_label = st.selectbox("Campanha (remessa)", list(map_label_to_rem.keys()), key="cli_pay_rem")
+                rem = map_label_to_rem[rem_label]
+                
+                go2 = confirm_block(
+                    "Confirmar campanha",
+                    "Clique para calcular os valores desta campanha e o consolidado do mês.",
+                    "Calcular remuneração",
+                    "cli_pay_go2"
+                )
+                if not go2:
+                    st.info("Selecione a campanha e clique em **Calcular remuneração**.")
+                    st.stop()
+                
+                ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+                env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
+                
+                st.write("#### Por campanha (detalhado)")
+                if not env_u:
+                    st.warning("Sem CSV de envios para esta campanha.")
                 else:
-                    st.info("Campanha já está na última faixa de preço.")
-
-            st.divider()
-            st.write("#### Mensal (acumulado)")
-            rows_out = []
-            total_month = 0.0
-            total_billable_month = 0
-
-            for r in rems_month:
-                ups = _resp_data(db_list_uploads(remessa_id=r["id"], limit=200)) or []
-                env_files = [u for u in ups if u.get("file_tipo") == "envios"]
-                if not env_files:
-                    continue
-                env_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-                env_u2 = env_files[0]
-                url2 = storage_signed_url(UPLOADS_BUCKET, env_u2.get("storage_path"), expires_in=3600)
-                if not url2:
-                    continue
-
-                csv_bytes2 = fetch_bytes_from_signed_url(url2)
-                metrics2 = compute_envios_metrics(csv_bytes2)
-                qty_billable2 = int(metrics2["billable"])
-                unit2 = tier_price(plano_tipo, qty_billable2)
-                tot2 = qty_billable2 * unit2
-
-                total_month += tot2
-                total_billable_month += qty_billable2
-                rows_out.append({
-                    "remessa": remessa_get_key(r),
-                    "data": r.get("data"),
-                    "cobráveis": qty_billable2,
-                    "unit": unit2,
-                    "total": tot2
-                })
-
-            cM1, cM2, cM3 = st.columns(3)
-            cM1.metric("Cobráveis no mês", fmt_int(total_billable_month))
-            cM2.metric("Acumulado no mês", fmt_money(total_month))
-            a, b, p = current_tier(plano_tipo, total_billable_month if total_billable_month > 0 else (1 if plano_tipo == "pos" else 1000))
-            cM3.metric("Faixa (mês)", fmt_money(p))
-
-            nxtm = next_tier(plano_tipo, total_billable_month)
-            if nxtm:
-                na, nb, np = nxtm
-                falta = max(na - total_billable_month, 0)
-                st.info(f"Para atingir a próxima faixa do mês ({fmt_money(np)}), faltam **{fmt_int(falta)}** cobráveis.")
-            else:
-                st.info("Você já está na última faixa de preço do mês.")
-
-            st.dataframe([{
-                "remessa": x["remessa"],
-                "data": x["data"],
-                "cobráveis": fmt_int(x["cobráveis"]),
-                "unitário": fmt_money(x["unit"]),
-                "total": fmt_money(x["total"])
-            } for x in rows_out], use_container_width=True)
-
+                    url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                    csv_bytes = fetch_bytes_from_signed_url(url)
+                    metrics = compute_envios_metrics(csv_bytes)
+                
+                    qty_total = int(metrics["total_rows"])
+                    qty_billable = int(metrics["billable"])
+                    qty_undel = int(metrics["undelivered"])
+                    unit = tier_price(plano_tipo, qty_billable)
+                    total = qty_billable * unit
+                
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Total linhas", fmt_int(qty_total))
+                    k2.metric("Cobráveis", fmt_int(qty_billable))
+                    k3.metric("Undelivered", fmt_int(qty_undel))
+                    k4.metric("Unitário", fmt_money(unit))
+                
+                    st.success(f"Total da campanha (estimado): **{fmt_money(total)}**")
+                
+                    nxt = next_tier(plano_tipo, qty_billable)
+                    if nxt:
+                        a, b, p = nxt
+                        falta = max(a - qty_billable, 0)
+                        st.info(f"Para atingir a próxima faixa desta campanha ({fmt_money(p)}), faltam **{fmt_int(falta)}** cobráveis.")
+                    else:
+                        st.info("Campanha já está na última faixa de preço.")
+                
+                st.divider()
+                st.write("#### Mensal (acumulado)")
+                rows_out = []
+                total_month = 0.0
+                total_billable_month = 0
+                
+                for r in rems_month:
+                    ups = _resp_data(db_list_uploads(remessa_id=r["id"], limit=200)) or []
+                    env_files = [u for u in ups if u.get("file_tipo") == "envios"]
+                    if not env_files:
+                        continue
+                    env_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+                    env_u2 = env_files[0]
+                    url2 = storage_signed_url(UPLOADS_BUCKET, env_u2.get("storage_path"), expires_in=3600)
+                    if not url2:
+                        continue
+                
+                    csv_bytes2 = fetch_bytes_from_signed_url(url2)
+                    metrics2 = compute_envios_metrics(csv_bytes2)
+                    qty_billable2 = int(metrics2["billable"])
+                    unit2 = tier_price(plano_tipo, qty_billable2)
+                    tot2 = qty_billable2 * unit2
+                
+                    total_month += tot2
+                    total_billable_month += qty_billable2
+                    rows_out.append({
+                        "remessa": remessa_get_key(r),
+                        "data": r.get("data"),
+                        "cobráveis": qty_billable2,
+                        "unit": unit2,
+                        "total": tot2
+                    })
+                
+                cM1, cM2, cM3 = st.columns(3)
+                cM1.metric("Cobráveis no mês", fmt_int(total_billable_month))
+                cM2.metric("Acumulado no mês", fmt_money(total_month))
+                a, b, p = current_tier(plano_tipo, total_billable_month if total_billable_month > 0 else (1 if plano_tipo == "pos" else 1000))
+                cM3.metric("Faixa (mês)", fmt_money(p))
+                
+                nxtm = next_tier(plano_tipo, total_billable_month)
+                if nxtm:
+                    na, nb, np = nxtm
+                    falta = max(na - total_billable_month, 0)
+                    st.info(f"Para atingir a próxima faixa do mês ({fmt_money(np)}), faltam **{fmt_int(falta)}** cobráveis.")
+                else:
+                    st.info("Você já está na última faixa de preço do mês.")
+                
+                st.dataframe([{
+                    "remessa": x["remessa"],
+                    "data": x["data"],
+                    "cobráveis": fmt_int(x["cobráveis"]),
+                    "unitário": fmt_money(x["unit"]),
+                    "total": fmt_money(x["total"])
+                } for x in rows_out], use_container_width=True)
+                
         # ============================================================
         # CLIENTE — Bases para envio (NOVO)
         # ============================================================
@@ -1286,118 +1286,114 @@ if session_is_logged_in():
 
             if not go:
                 st.info("Selecione data/horário e arquivos e clique em **Enviar base e agendar**.")
-                st.stop()
+            else:
+                
+                if not files:
+                    st.warning("Envie pelo menos 1 arquivo (CSV/XLSX).")
+                    st.stop()
+                
+                # 1) cria agendamento se não existir
+                try:
+                    if existing:
+                        agendamento_id = existing["id"]
+                        # garante horário igual
+                        schedule_time_str = existing.get("schedule_time") or schedule_time_str
+                        schedule_dt_utc = existing.get("schedule_dt_utc") or _safe_dt_local_to_utc_iso(schedule_date, schedule_time)
+                    else:
+                        schedule_dt_utc = _safe_dt_local_to_utc_iso(schedule_date, schedule_time)
+                        ins = db_insert_base_agendamento(
+                            cliente_id=cliente["id"],
+                            schedule_date=schedule_date,
+                            schedule_time=schedule_time_str,
+                            schedule_dt_utc=schedule_dt_utc,
+                            created_by_email=user_email,
+                            created_by_user_id=user_id,
+                            notes=notes
+                        )
+                        agendamento_id = (_resp_data(ins) or [None])[0]["id"]
+                
+                    # 2) salva arquivos
+                    saved = []
+                    for f in files:
+                        raw = f.getvalue()
+                        name = f.name
+                        ext = name.split(".")[-1].lower() if "." in name else ""
+                        size_bytes = len(raw)
+                        digest = sha256_hex(raw)
+                
+                        # storage
+                        path = make_client_base_storage_path(cliente["slug"], schedule_date, name)
+                        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext in ("xlsx", "xls") else "text/csv"
+                        storage_upload_bytes(CLIENT_BASES_BUCKET, path, raw, content_type)
+                
+                        # db record
+                        db_insert_base_arquivo(
+                            agendamento_id=agendamento_id,
+                            cliente_id=cliente["id"],
+                            original_name=name,
+                            file_ext=ext,
+                            bucket=CLIENT_BASES_BUCKET,
+                            storage_path=path,
+                            size_bytes=size_bytes,
+                            sha256=digest,
+                            uploaded_by_email=user_email,
+                            uploaded_by_user_id=user_id
+                        )
+                        saved.append(name)
+                
+                    # 3) envia e-mails (cliente + admin)                    # Notificação (no upload da base): **somente Admin**.
+                    # O cliente será notificado quando o status do agendamento for marcado como **Concluído** no painel admin.
+                    admin_ok = False
 
-            if not files:
-                st.warning("Envie pelo menos 1 arquivo (CSV/XLSX).")
-                st.stop()
+                    subject_admin = f"Nova base disponível — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
+                    body_admin = (
+                        f"Admin,
 
-            # 1) cria agendamento se não existir
-            try:
-                if existing:
-                    agendamento_id = existing["id"]
-                    # garante horário igual
-                    schedule_time_str = existing.get("schedule_time") or schedule_time_str
-                    schedule_dt_utc = existing.get("schedule_dt_utc") or _safe_dt_local_to_utc_iso(schedule_date, schedule_time)
-                else:
-                    schedule_dt_utc = _safe_dt_local_to_utc_iso(schedule_date, schedule_time)
-                    ins = db_insert_base_agendamento(
-                        cliente_id=cliente["id"],
-                        schedule_date=schedule_date,
-                        schedule_time=schedule_time_str,
-                        schedule_dt_utc=schedule_dt_utc,
-                        created_by_email=user_email,
-                        created_by_user_id=user_id,
-                        notes=notes
+"
+                        f"O cliente enviou uma base e ela está disponível no painel.
+
+"
+                        f"Cliente: {cliente.get('razao_social','')}
+"
+                        f"Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}
+"
+                        f"Arquivos: {', '.join(saved)}
+"
+                        f"Usuário: {user_email}
+"
+                        f"Observação: {notes or '-'}
+
+"
+                        f"ContactBot
+"
                     )
-                    agendamento_id = (_resp_data(ins) or [None])[0]["id"]
 
-                # 2) salva arquivos
-                saved = []
-                for f in files:
-                    raw = f.getvalue()
-                    name = f.name
-                    ext = name.split(".")[-1].lower() if "." in name else ""
-                    size_bytes = len(raw)
-                    digest = sha256_hex(raw)
+                    ok2, _ = send_notification_email(ADMIN_EMAIL, subject_admin, body_admin)
+                    admin_ok = ok2
 
-                    # storage
-                    path = make_client_base_storage_path(cliente["slug"], schedule_date, name)
-                    content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext in ("xlsx", "xls") else "text/csv"
-                    storage_upload_bytes(CLIENT_BASES_BUCKET, path, raw, content_type)
-
-                    # db record
-                    db_insert_base_arquivo(
-                        agendamento_id=agendamento_id,
-                        cliente_id=cliente["id"],
-                        original_name=name,
-                        file_ext=ext,
-                        bucket=CLIENT_BASES_BUCKET,
-                        storage_path=path,
-                        size_bytes=size_bytes,
-                        sha256=digest,
-                        uploaded_by_email=user_email,
-                        uploaded_by_user_id=user_id
-                    )
-                    saved.append(name)
-
-                # 3) envia e-mails (cliente + admin)
-                contato = (cliente.get("contato_email") or cliente.get("email_principal") or "").strip()
-                client_ok = False
-                admin_ok = False
-
-                subject_client = f"Base recebida com sucesso — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
-                body_client = (
-                    f"Olá!\n\n"
-                    f"Recebemos sua base com sucesso.\n\n"
-                    f"Cliente: {cliente.get('razao_social','')}\n"
-                    f"Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}\n"
-                    f"Arquivos: {', '.join(saved)}\n\n"
-                    f"Observação: {notes or '-'}\n\n"
-                    f"Atenciosamente,\nContactBot\n"
-                )
-
-                subject_admin = f"Nova base disponível — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
-                body_admin = (
-                    f"Admin,\n\n"
-                    f"O cliente enviou uma base e ela está disponível no painel.\n\n"
-                    f"Cliente: {cliente.get('razao_social','')}\n"
-                    f"Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}\n"
-                    f"Arquivos: {', '.join(saved)}\n"
-                    f"Usuário: {user_email}\n"
-                    f"Observação: {notes or '-'}\n\n"
-                    f"ContactBot\n"
-                )
-
-                if contato:
-                    ok, _ = send_notification_email(contato, subject_client, body_client)
-                    client_ok = ok
-                ok2, _ = send_notification_email(ADMIN_EMAIL, subject_admin, body_admin)
-                admin_ok = ok2
-
-                st.success("✅ Base registrada e arquivos salvos.")
-                st.caption(f"E-mail cliente: {'enviado' if client_ok else 'pendente (SMTP não ativo ou e-mail não informado)'} | E-mail admin: {'enviado' if admin_ok else 'pendente (SMTP não ativo)'}")
-
-            except Exception as e:
-                st.error(f"Falha ao registrar base: {e}")
-
-            st.divider()
-            st.write("#### Histórico de agendamentos (seu cliente)")
-            try:
-                ags = _resp_data(db_list_base_agendamentos(cliente_id=cliente["id"], limit=50)) or []
-                if not ags:
-                    st.info("Nenhum agendamento ainda.")
-                else:
-                    st.dataframe([{
-                        "data": a.get("schedule_date"),
-                        "horário": a.get("schedule_time"),
-                        "status": a.get("status"),
-                        "criado_por": a.get("created_by_email"),
-                        "obs": a.get("notes") or "",
-                    } for a in ags], use_container_width=True)
-            except Exception as e:
-                st.warning(f"Não foi possível carregar histórico: {e}")
-
+                    st.success("✅ Base registrada e arquivos salvos.")
+                    st.caption(f"E-mail admin: {'enviado' if admin_ok else 'pendente (SMTP não ativo)'}")
+                
+                except Exception as e:
+                    st.error(f"Falha ao registrar base: {e}")
+                
+                st.divider()
+                st.write("#### Histórico de agendamentos (seu cliente)")
+                try:
+                    ags = _resp_data(db_list_base_agendamentos(cliente_id=cliente["id"], limit=50)) or []
+                    if not ags:
+                        st.info("Nenhum agendamento ainda.")
+                    else:
+                        st.dataframe([{
+                            "data": a.get("schedule_date"),
+                            "horário": a.get("schedule_time"),
+                            "status": a.get("status"),
+                            "criado_por": a.get("created_by_email"),
+                            "obs": a.get("notes") or "",
+                        } for a in ags], use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Não foi possível carregar histórico: {e}")
+                
         st.stop()
 
     # ============================================================
@@ -1424,77 +1420,77 @@ if session_is_logged_in():
         go = confirm_block("Confirmar cliente", "Clique para listar remessas do cliente selecionado.", "Confirmar", "adm_up_go")
         if not go:
             st.info("Selecione o cliente e clique em **Confirmar**.")
-            st.stop()
-
-        rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=300)) or []
-        if not rems:
-            st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
-            st.stop()
-
-        map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems}
-        rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem_adm")
-        rem = map_label_to_rem[rem_label]
-
-        file_tipo = st.selectbox("Tipo do arquivo", ["envios", "botoes", "base"], index=0, key="up_tipo_adm")
-        uploaded = st.file_uploader("Envie um CSV", type=["csv"], key="up_file_adm")
-
-        if uploaded:
-            data = uploaded.getvalue()
-            file_name = uploaded.name
-            size_bytes = len(data)
-            digest = sha256_hex(data)
-
-            st.caption(f"Arquivo: **{file_name}** | {fmt_int(size_bytes)} bytes | SHA256 `{digest[:16]}...`")
-
-            try:
-                headers, rows = parse_csv_preview(data, max_rows=20)
-                st.write("Colunas detectadas:", headers or "(sem cabeçalho)")
-                if rows:
-                    st.dataframe(rows, use_container_width=True)
-            except Exception as e:
-                st.warning(f"Preview falhou: {e}")
-
-            if st.button("Salvar arquivo", type="primary", use_container_width=True, key="up_save_adm"):
-                try:
-                    rem_key = remessa_get_key(rem) or f"REM-{rem.get('id')}"
-                    path = make_storage_path(cliente["slug"], rem_key, file_tipo, file_name)
-                    storage_upload_csv(UPLOADS_BUCKET, path, data)
-
-                    db_insert_upload_record(
-                        user_id=user_id,
-                        user_email=user_email,
-                        file_name=file_name,
-                        bucket=UPLOADS_BUCKET,
-                        path=path,
-                        size_bytes=size_bytes,
-                        sha256=digest,
-                        remessa_id=rem["id"],
-                        file_tipo=file_tipo
-                    )
-
-                    ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-                    status = remessa_status_from_uploads(ups)
-                    db_update_remessa_status(rem["id"], status)
-
-                    st.success(f"✅ Upload salvo. Status da remessa: **{status}**")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Falha ao salvar: {e}")
-
-        st.divider()
-        st.write("#### Uploads desta remessa")
-        ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-        if not ups:
-            st.info("Nenhum upload nesta remessa ainda.")
         else:
-            st.dataframe([{
-                "data": u.get("created_at"),
-                "tipo": u.get("file_tipo"),
-                "arquivo": u.get("file_name"),
-                "tamanho": fmt_int(u.get("size_bytes")),
-                "storage_path": u.get("storage_path"),
-            } for u in ups], use_container_width=True)
-
+            
+            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=300)) or []
+            if not rems:
+                st.warning("Crie uma remessa primeiro (aba Campanhas/Remessas).")
+                st.stop()
+            
+            map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems}
+            rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="up_rem_adm")
+            rem = map_label_to_rem[rem_label]
+            
+            file_tipo = st.selectbox("Tipo do arquivo", ["envios", "botoes", "base"], index=0, key="up_tipo_adm")
+            uploaded = st.file_uploader("Envie um CSV", type=["csv"], key="up_file_adm")
+            
+            if uploaded:
+                data = uploaded.getvalue()
+                file_name = uploaded.name
+                size_bytes = len(data)
+                digest = sha256_hex(data)
+            
+                st.caption(f"Arquivo: **{file_name}** | {fmt_int(size_bytes)} bytes | SHA256 `{digest[:16]}...`")
+            
+                try:
+                    headers, rows = parse_csv_preview(data, max_rows=20)
+                    st.write("Colunas detectadas:", headers or "(sem cabeçalho)")
+                    if rows:
+                        st.dataframe(rows, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Preview falhou: {e}")
+            
+                if st.button("Salvar arquivo", type="primary", use_container_width=True, key="up_save_adm"):
+                    try:
+                        rem_key = remessa_get_key(rem) or f"REM-{rem.get('id')}"
+                        path = make_storage_path(cliente["slug"], rem_key, file_tipo, file_name)
+                        storage_upload_csv(UPLOADS_BUCKET, path, data)
+            
+                        db_insert_upload_record(
+                            user_id=user_id,
+                            user_email=user_email,
+                            file_name=file_name,
+                            bucket=UPLOADS_BUCKET,
+                            path=path,
+                            size_bytes=size_bytes,
+                            sha256=digest,
+                            remessa_id=rem["id"],
+                            file_tipo=file_tipo
+                        )
+            
+                        ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+                        status = remessa_status_from_uploads(ups)
+                        db_update_remessa_status(rem["id"], status)
+            
+                        st.success(f"✅ Upload salvo. Status da remessa: **{status}**")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Falha ao salvar: {e}")
+            
+            st.divider()
+            st.write("#### Uploads desta remessa")
+            ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+            if not ups:
+                st.info("Nenhum upload nesta remessa ainda.")
+            else:
+                st.dataframe([{
+                    "data": u.get("created_at"),
+                    "tipo": u.get("file_tipo"),
+                    "arquivo": u.get("file_name"),
+                    "tamanho": fmt_int(u.get("size_bytes")),
+                    "storage_path": u.get("storage_path"),
+                } for u in ups], use_container_width=True)
+            
     # ============================================================
     # ADMIN — Campanhas (Remessas)
     # ============================================================
@@ -1532,20 +1528,20 @@ if session_is_logged_in():
         go = confirm_block("Confirmar listagem", "Clique para carregar as últimas remessas do cliente.", "Carregar remessas", "adm_rem_list_go")
         if not go:
             st.info("Clique em **Carregar remessas** para visualizar.")
-            st.stop()
-
-        rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=300)) or []
-        if not rems:
-            st.info("Nenhuma remessa ainda.")
         else:
-            st.dataframe([{
-                "id": r.get("id"),
-                "data": r.get("data"),
-                "número": remessa_get_numero(r),
-                "remessa": remessa_get_key(r),
-                "status": r.get("status"),
-            } for r in rems], use_container_width=True)
-
+            
+            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=300)) or []
+            if not rems:
+                st.info("Nenhuma remessa ainda.")
+            else:
+                st.dataframe([{
+                    "id": r.get("id"),
+                    "data": r.get("data"),
+                    "número": remessa_get_numero(r),
+                    "remessa": remessa_get_key(r),
+                    "status": r.get("status"),
+                } for r in rems], use_container_width=True)
+            
     # ============================================================
     # ADMIN — Relatórios
     # ============================================================
@@ -1570,80 +1566,80 @@ if session_is_logged_in():
         go = confirm_block("Confirmar filtros", "Clique para listar remessas do mês.", "Confirmar e carregar", "adm_rep_go")
         if not go:
             st.info("Selecione e clique em **Confirmar e carregar**.")
-            st.stop()
-
-        rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
-
-        def in_month(r):
-            try:
-                d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
-                return d.year == int(year) and d.month == int(month)
-            except Exception:
-                return False
-
-        rems_month = [r for r in rems if in_month(r)]
-        if not rems_month:
-            st.info("Nenhuma remessa encontrada para este mês.")
-            st.stop()
-
-        map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
-        rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="adm_rep_rem")
-        rem = map_label_to_rem[rem_label]
-
-        go2 = confirm_block("Confirmar remessa", "Clique para carregar downloads e sintético desta remessa.", "Carregar remessa", "adm_rep_go2")
-        if not go2:
-            st.info("Selecione a remessa e clique em **Carregar remessa**.")
-            st.stop()
-
-        ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-        env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
-        bot_u = next((u for u in ups if u.get("file_tipo") == "botoes"), None)
-
-        st.write("#### Downloads")
-        d1, d2 = st.columns(2)
-        with d1:
-            if env_u:
-                url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-                data = fetch_bytes_from_signed_url(url) if url else None
-                if data:
-                    st.download_button("Baixar Envios (CSV)", data=data, file_name=env_u.get("file_name") or "envios.csv", mime="text/csv", use_container_width=True)
-                else:
-                    st.warning("Sem link de envios.")
-            else:
-                st.info("Envios não disponível.")
-        with d2:
-            if bot_u:
-                url = storage_signed_url(UPLOADS_BUCKET, bot_u.get("storage_path"), expires_in=3600)
-                data = fetch_bytes_from_signed_url(url) if url else None
-                if data:
-                    st.download_button("Baixar Botões (CSV)", data=data, file_name=bot_u.get("file_name") or "botoes.csv", mime="text/csv", use_container_width=True)
-                else:
-                    st.warning("Sem link de botões.")
-            else:
-                st.info("Botões não disponível.")
-
-        st.divider()
-        st.write("#### Sintético + % por status (envios)")
-        if not env_u:
-            st.warning("Sem CSV de envios.")
         else:
-            url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-            csv_bytes = fetch_bytes_from_signed_url(url)
-            metrics = compute_envios_metrics(csv_bytes)
-
-            total_rows = int(metrics["total_rows"])
-            billable = int(metrics["billable"])
-            undelivered = int(metrics["undelivered"])
-            by_status = metrics["by_status"]
-
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total linhas", fmt_int(total_rows))
-            m2.metric("Cobráveis", fmt_int(billable))
-            m3.metric("Undelivered", fmt_int(undelivered))
-
-            st.caption(f"Coluna de status: {metrics['status_col']} | Delimitador: {metrics['delimiter']}")
-            status_percent_block(by_status, total_rows)
-
+            
+            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
+            
+            def in_month(r):
+                try:
+                    d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
+                    return d.year == int(year) and d.month == int(month)
+                except Exception:
+                    return False
+            
+            rems_month = [r for r in rems if in_month(r)]
+            if not rems_month:
+                st.info("Nenhuma remessa encontrada para este mês.")
+                st.stop()
+            
+            map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
+            rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="adm_rep_rem")
+            rem = map_label_to_rem[rem_label]
+            
+            go2 = confirm_block("Confirmar remessa", "Clique para carregar downloads e sintético desta remessa.", "Carregar remessa", "adm_rep_go2")
+            if not go2:
+                st.info("Selecione a remessa e clique em **Carregar remessa**.")
+                st.stop()
+            
+            ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+            env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
+            bot_u = next((u for u in ups if u.get("file_tipo") == "botoes"), None)
+            
+            st.write("#### Downloads")
+            d1, d2 = st.columns(2)
+            with d1:
+                if env_u:
+                    url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                    data = fetch_bytes_from_signed_url(url) if url else None
+                    if data:
+                        st.download_button("Baixar Envios (CSV)", data=data, file_name=env_u.get("file_name") or "envios.csv", mime="text/csv", use_container_width=True)
+                    else:
+                        st.warning("Sem link de envios.")
+                else:
+                    st.info("Envios não disponível.")
+            with d2:
+                if bot_u:
+                    url = storage_signed_url(UPLOADS_BUCKET, bot_u.get("storage_path"), expires_in=3600)
+                    data = fetch_bytes_from_signed_url(url) if url else None
+                    if data:
+                        st.download_button("Baixar Botões (CSV)", data=data, file_name=bot_u.get("file_name") or "botoes.csv", mime="text/csv", use_container_width=True)
+                    else:
+                        st.warning("Sem link de botões.")
+                else:
+                    st.info("Botões não disponível.")
+            
+            st.divider()
+            st.write("#### Sintético + % por status (envios)")
+            if not env_u:
+                st.warning("Sem CSV de envios.")
+            else:
+                url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                csv_bytes = fetch_bytes_from_signed_url(url)
+                metrics = compute_envios_metrics(csv_bytes)
+            
+                total_rows = int(metrics["total_rows"])
+                billable = int(metrics["billable"])
+                undelivered = int(metrics["undelivered"])
+                by_status = metrics["by_status"]
+            
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total linhas", fmt_int(total_rows))
+                m2.metric("Cobráveis", fmt_int(billable))
+                m3.metric("Undelivered", fmt_int(undelivered))
+            
+                st.caption(f"Coluna de status: {metrics['status_col']} | Delimitador: {metrics['delimiter']}")
+                status_percent_block(by_status, total_rows)
+            
     # ============================================================
     # ADMIN — Remuneração
     # ============================================================
@@ -1669,121 +1665,121 @@ if session_is_logged_in():
         go = confirm_block("Confirmar filtros", "Clique para listar campanhas do mês.", "Confirmar e carregar", "adm_pay_go")
         if not go:
             st.info("Selecione e clique em **Confirmar e carregar**.")
-            st.stop()
-
-        rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
-
-        def in_month(r):
-            try:
-                d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
-                return d.year == int(year) and d.month == int(month)
-            except Exception:
-                return False
-
-        rems_month = [r for r in rems if in_month(r)]
-        st.caption(f"Plano do cliente: **{plano_tipo.upper()}**")
-
-        if not rems_month:
-            st.info("Nenhuma remessa neste mês.")
-            st.stop()
-
-        map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
-        rem_label = st.selectbox("Campanha (remessa)", list(map_label_to_rem.keys()), key="adm_pay_rem")
-        rem = map_label_to_rem[rem_label]
-
-        go2 = confirm_block("Confirmar campanha", "Clique para calcular campanha e consolidado mensal.", "Calcular remuneração", "adm_pay_go2")
-        if not go2:
-            st.info("Selecione a campanha e clique em **Calcular remuneração**.")
-            st.stop()
-
-        ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-        env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
-
-        st.write("#### Por campanha (detalhado)")
-        if not env_u:
-            st.warning("Sem CSV de envios para esta campanha.")
         else:
-            url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
-            csv_bytes = fetch_bytes_from_signed_url(url)
-            metrics = compute_envios_metrics(csv_bytes)
-
-            qty_total = int(metrics["total_rows"])
-            qty_billable = int(metrics["billable"])
-            qty_undel = int(metrics["undelivered"])
-            unit = tier_price(plano_tipo, qty_billable)
-            total = qty_billable * unit
-
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Total linhas", fmt_int(qty_total))
-            k2.metric("Cobráveis", fmt_int(qty_billable))
-            k3.metric("Undelivered", fmt_int(qty_undel))
-            k4.metric("Unitário", fmt_money(unit))
-
-            st.success(f"Total da campanha (estimado): **{fmt_money(total)}**")
-
-            nxt = next_tier(plano_tipo, qty_billable)
-            if nxt:
-                a, b, p = nxt
-                falta = max(a - qty_billable, 0)
-                st.info(f"Para atingir a próxima faixa desta campanha ({fmt_money(p)}), faltam **{fmt_int(falta)}** cobráveis.")
+            
+            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=800)) or []
+            
+            def in_month(r):
+                try:
+                    d = datetime.strptime(r.get("data"), "%Y-%m-%d").date()
+                    return d.year == int(year) and d.month == int(month)
+                except Exception:
+                    return False
+            
+            rems_month = [r for r in rems if in_month(r)]
+            st.caption(f"Plano do cliente: **{plano_tipo.upper()}**")
+            
+            if not rems_month:
+                st.info("Nenhuma remessa neste mês.")
+                st.stop()
+            
+            map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems_month}
+            rem_label = st.selectbox("Campanha (remessa)", list(map_label_to_rem.keys()), key="adm_pay_rem")
+            rem = map_label_to_rem[rem_label]
+            
+            go2 = confirm_block("Confirmar campanha", "Clique para calcular campanha e consolidado mensal.", "Calcular remuneração", "adm_pay_go2")
+            if not go2:
+                st.info("Selecione a campanha e clique em **Calcular remuneração**.")
+                st.stop()
+            
+            ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+            env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
+            
+            st.write("#### Por campanha (detalhado)")
+            if not env_u:
+                st.warning("Sem CSV de envios para esta campanha.")
             else:
-                st.info("Campanha já está na última faixa de preço.")
-
-        st.divider()
-        st.write("#### Consolidado mensal")
-        rows_out = []
-        total_month = 0.0
-        total_billable_month = 0
-
-        for r in rems_month:
-            ups = _resp_data(db_list_uploads(remessa_id=r["id"], limit=200)) or []
-            env_files = [u for u in ups if u.get("file_tipo") == "envios"]
-            if not env_files:
-                continue
-            env_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-            env_u2 = env_files[0]
-            url2 = storage_signed_url(UPLOADS_BUCKET, env_u2.get("storage_path"), expires_in=3600)
-            if not url2:
-                continue
-
-            csv_bytes2 = fetch_bytes_from_signed_url(url2)
-            metrics2 = compute_envios_metrics(csv_bytes2)
-            qty_billable2 = int(metrics2["billable"])
-            unit2 = tier_price(plano_tipo, qty_billable2)
-            tot2 = qty_billable2 * unit2
-
-            total_month += tot2
-            total_billable_month += qty_billable2
-            rows_out.append({
-                "remessa": remessa_get_key(r),
-                "data": r.get("data"),
-                "cobráveis": qty_billable2,
-                "unit": unit2,
-                "total": tot2
-            })
-
-        cM1, cM2, cM3 = st.columns(3)
-        cM1.metric("Cobráveis no mês", fmt_int(total_billable_month))
-        cM2.metric("Acumulado no mês", fmt_money(total_month))
-        a, b, p = current_tier(plano_tipo, total_billable_month if total_billable_month > 0 else (1 if plano_tipo == "pos" else 1000))
-        cM3.metric("Faixa (mês)", fmt_money(p))
-
-        nxtm = next_tier(plano_tipo, total_billable_month)
-        if nxtm:
-            na, nb, np = nxtm
-            falta = max(na - total_billable_month, 0)
-            st.info(f"Para atingir a próxima faixa do mês ({fmt_money(np)}), faltam **{fmt_int(falta)}** cobráveis.")
-        else:
-            st.info("Você já está na última faixa de preço do mês.")
-
-        st.dataframe([{
-            "remessa": x["remessa"],
-            "data": x["data"],
-            "cobráveis": fmt_int(x["cobráveis"]),
-            "unitário": fmt_money(x["unit"]),
-            "total": fmt_money(x["total"])
-        } for x in rows_out], use_container_width=True)
-
+                url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
+                csv_bytes = fetch_bytes_from_signed_url(url)
+                metrics = compute_envios_metrics(csv_bytes)
+            
+                qty_total = int(metrics["total_rows"])
+                qty_billable = int(metrics["billable"])
+                qty_undel = int(metrics["undelivered"])
+                unit = tier_price(plano_tipo, qty_billable)
+                total = qty_billable * unit
+            
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Total linhas", fmt_int(qty_total))
+                k2.metric("Cobráveis", fmt_int(qty_billable))
+                k3.metric("Undelivered", fmt_int(qty_undel))
+                k4.metric("Unitário", fmt_money(unit))
+            
+                st.success(f"Total da campanha (estimado): **{fmt_money(total)}**")
+            
+                nxt = next_tier(plano_tipo, qty_billable)
+                if nxt:
+                    a, b, p = nxt
+                    falta = max(a - qty_billable, 0)
+                    st.info(f"Para atingir a próxima faixa desta campanha ({fmt_money(p)}), faltam **{fmt_int(falta)}** cobráveis.")
+                else:
+                    st.info("Campanha já está na última faixa de preço.")
+            
+            st.divider()
+            st.write("#### Consolidado mensal")
+            rows_out = []
+            total_month = 0.0
+            total_billable_month = 0
+            
+            for r in rems_month:
+                ups = _resp_data(db_list_uploads(remessa_id=r["id"], limit=200)) or []
+                env_files = [u for u in ups if u.get("file_tipo") == "envios"]
+                if not env_files:
+                    continue
+                env_files.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+                env_u2 = env_files[0]
+                url2 = storage_signed_url(UPLOADS_BUCKET, env_u2.get("storage_path"), expires_in=3600)
+                if not url2:
+                    continue
+            
+                csv_bytes2 = fetch_bytes_from_signed_url(url2)
+                metrics2 = compute_envios_metrics(csv_bytes2)
+                qty_billable2 = int(metrics2["billable"])
+                unit2 = tier_price(plano_tipo, qty_billable2)
+                tot2 = qty_billable2 * unit2
+            
+                total_month += tot2
+                total_billable_month += qty_billable2
+                rows_out.append({
+                    "remessa": remessa_get_key(r),
+                    "data": r.get("data"),
+                    "cobráveis": qty_billable2,
+                    "unit": unit2,
+                    "total": tot2
+                })
+            
+            cM1, cM2, cM3 = st.columns(3)
+            cM1.metric("Cobráveis no mês", fmt_int(total_billable_month))
+            cM2.metric("Acumulado no mês", fmt_money(total_month))
+            a, b, p = current_tier(plano_tipo, total_billable_month if total_billable_month > 0 else (1 if plano_tipo == "pos" else 1000))
+            cM3.metric("Faixa (mês)", fmt_money(p))
+            
+            nxtm = next_tier(plano_tipo, total_billable_month)
+            if nxtm:
+                na, nb, np = nxtm
+                falta = max(na - total_billable_month, 0)
+                st.info(f"Para atingir a próxima faixa do mês ({fmt_money(np)}), faltam **{fmt_int(falta)}** cobráveis.")
+            else:
+                st.info("Você já está na última faixa de preço do mês.")
+            
+            st.dataframe([{
+                "remessa": x["remessa"],
+                "data": x["data"],
+                "cobráveis": fmt_int(x["cobráveis"]),
+                "unitário": fmt_money(x["unit"]),
+                "total": fmt_money(x["total"])
+            } for x in rows_out], use_container_width=True)
+            
     # ============================================================
     # ADMIN — Bases (Agendamentos)
     # ============================================================
@@ -1852,54 +1848,54 @@ create table if not exists public.bases_arquivos (
         go = confirm_block("Confirmar", "Clique para carregar agendamentos do cliente.", "Carregar agendamentos", "adm_base_go")
         if not go:
             st.info("Selecione e clique em **Carregar agendamentos**.")
-            st.stop()
-
-        ags = _resp_data(db_list_base_agendamentos(cliente_id=cliente["id"], limit=200)) or []
-        if not ags:
-            st.info("Nenhum agendamento encontrado para este cliente.")
-            st.stop()
-
-        # escolher um agendamento
-        def ag_label(a: dict) -> str:
-            return f"{a.get('schedule_date')} {a.get('schedule_time')} — {a.get('status')}"
-
-        ag_map = {ag_label(a): a for a in ags}
-        ag_sel = st.selectbox("Agendamento", list(ag_map.keys()), key="adm_base_ag_sel")
-        ag = ag_map[ag_sel]
-
-        go2 = confirm_block("Confirmar agendamento", "Clique para carregar os arquivos deste agendamento.", "Carregar arquivos", "adm_base_go2")
-        if not go2:
-            st.info("Clique em **Carregar arquivos**.")
-            st.stop()
-
-        files = _resp_data(db_list_base_arquivos(agendamento_id=ag["id"], limit=300)) or []
-        st.write("#### Detalhes")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Data", str(ag.get("schedule_date")))
-        c2.metric("Horário", str(ag.get("schedule_time")))
-        c3.metric("Status", str(ag.get("status")))
-        c4.metric("Arquivos", fmt_int(len(files)))
-
-        if not files:
-            st.info("Nenhum arquivo neste agendamento.")
         else:
-            st.write("#### Arquivos")
-            st.dataframe([{
-                "quando": f.get("created_at"),
-                "arquivo": f.get("original_name"),
-                "ext": f.get("file_ext") or "",
-                "tamanho": fmt_int(f.get("size_bytes")),
-                "sha256": (f.get("sha256") or "")[:12] + "...",
-                "storage": f.get("storage_path"),
-            } for f in files], use_container_width=True)
-
-            st.write("#### Download (links assinados)")
-            for f in files[:50]:
-                url = storage_signed_url(f.get("storage_bucket"), f.get("storage_path"), expires_in=3600)
-                if url:
-                    st.markdown(f"- **{f.get('original_name')}** — link assinado gerado (válido por 1h).")
-                    st.code(url, language="text")
-
+            
+            ags = _resp_data(db_list_base_agendamentos(cliente_id=cliente["id"], limit=200)) or []
+            if not ags:
+                st.info("Nenhum agendamento encontrado para este cliente.")
+                st.stop()
+            
+            # escolher um agendamento
+            def ag_label(a: dict) -> str:
+                return f"{a.get('schedule_date')} {a.get('schedule_time')} — {a.get('status')}"
+            
+            ag_map = {ag_label(a): a for a in ags}
+            ag_sel = st.selectbox("Agendamento", list(ag_map.keys()), key="adm_base_ag_sel")
+            ag = ag_map[ag_sel]
+            
+            go2 = confirm_block("Confirmar agendamento", "Clique para carregar os arquivos deste agendamento.", "Carregar arquivos", "adm_base_go2")
+            if not go2:
+                st.info("Clique em **Carregar arquivos**.")
+                st.stop()
+            
+            files = _resp_data(db_list_base_arquivos(agendamento_id=ag["id"], limit=300)) or []
+            st.write("#### Detalhes")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Data", str(ag.get("schedule_date")))
+            c2.metric("Horário", str(ag.get("schedule_time")))
+            c3.metric("Status", str(ag.get("status")))
+            c4.metric("Arquivos", fmt_int(len(files)))
+            
+            if not files:
+                st.info("Nenhum arquivo neste agendamento.")
+            else:
+                st.write("#### Arquivos")
+                st.dataframe([{
+                    "quando": f.get("created_at"),
+                    "arquivo": f.get("original_name"),
+                    "ext": f.get("file_ext") or "",
+                    "tamanho": fmt_int(f.get("size_bytes")),
+                    "sha256": (f.get("sha256") or "")[:12] + "...",
+                    "storage": f.get("storage_path"),
+                } for f in files], use_container_width=True)
+            
+                st.write("#### Download (links assinados)")
+                for f in files[:50]:
+                    url = storage_signed_url(f.get("storage_bucket"), f.get("storage_path"), expires_in=3600)
+                    if url:
+                        st.markdown(f"- **{f.get('original_name')}** — link assinado gerado (válido por 1h).")
+                        st.code(url, language="text")
+            
     # ============================================================
     # ADMIN — Configurações
     # ============================================================
@@ -2076,111 +2072,93 @@ create table if not exists public.bases_arquivos (
             go = confirm_block("Confirmar cliente", "Clique para listar remessas e liberar o envio.", "Confirmar", "mail_go")
             if not go:
                 st.info("Clique em **Confirmar**.")
-                st.stop()
-
-            rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=400)) or []
-            if not rems:
-                st.warning("Crie uma remessa primeiro.")
-                st.stop()
-
-            map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems}
-            rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="mail_rem")
-            rem = map_label_to_rem[rem_label]
-
-            go2 = confirm_block("Confirmar remessa", "Clique para carregar anexos e liberar o envio.", "Carregar remessa", "mail_go2")
-            if not go2:
-                st.info("Clique em **Carregar remessa**.")
-                st.stop()
-
-            ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
-            env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
-            bot_u = next((u for u in ups if u.get("file_tipo") == "botoes"), None)
-
-            cA, cB, cC = st.columns([1, 1, 2])
-            with cA:
-                st.markdown(f"<span class='cb-pill'>Envios: {'OK' if env_u else 'Pendente'}</span>", unsafe_allow_html=True)
-            with cB:
-                st.markdown(f"<span class='cb-pill'>Botões: {'OK' if bot_u else 'Pendente'}</span>", unsafe_allow_html=True)
-            with cC:
-                st.markdown(f"<span class='cb-muted'>Destino padrão: <b>{cliente.get('contato_email') or cliente.get('email_principal') or '-'}</b></span>", unsafe_allow_html=True)
-
-            email_cfg_rows = _resp_data(db_get_email_config())
-            if not email_cfg_rows or not bool(email_cfg_rows[0].get("is_active", False)):
-                st.warning("Configure e ative o SMTP em **E-mail (SMTP)**.")
-                st.stop()
-
-            cfg = email_cfg_rows[0]
-            to_default = (cliente.get("contato_email") or cliente.get("email_principal") or "").strip()
-            to_email = st.text_input("E-mail de destino", value=to_default, key="mail_to")
-
-            d = datetime.strptime(rem.get("data"), "%Y-%m-%d").date() if rem.get("data") else date.today()
-            subj_tpl = cfg.get("template_assunto") or "Relatório ContactBot — {cliente} — {mes}/{ano}"
-            body_tpl = cfg.get("template_corpo") or "Olá, segue o relatório.\n\nAtt,\nContactBot"
-
-            assunto_prev = subj_tpl.format(cliente=cliente.get("razao_social", ""), mes=d.month, ano=d.year, remessa=remessa_get_key(rem))
-            corpo_prev = body_tpl.format(cliente=cliente.get("razao_social", ""), mes=d.month, ano=d.year, remessa=remessa_get_key(rem))
-
-            st.text_input("Assunto (prévia)", value=assunto_prev, key="mail_subj")
-            st.text_area("Mensagem (prévia)", value=corpo_prev, height=120, key="mail_body")
-
-            can_send = bool(env_u or bot_u) and bool(to_email.strip())
-
-            if st.button("Enviar relatório desta remessa", type="primary", use_container_width=True, disabled=not can_send, key="mail_send"):
-                started = datetime.now(timezone.utc).isoformat()
-                attachments: List[Tuple[str, bytes, str]] = []
-                attach_meta = []
-
-                try:
-                    for u, label in [(env_u, "envios"), (bot_u, "botoes")]:
-                        if not u:
-                            continue
-                        url = storage_signed_url(UPLOADS_BUCKET, u.get("storage_path"), expires_in=3600)
-                        if not url:
-                            raise RuntimeError(f"Sem link assinado para {label}.")
-                        data = fetch_bytes_from_signed_url(url)
-                        filename = u.get("file_name") or f"{label}.csv"
-                        attachments.append((filename, data, "text/csv"))
-                        attach_meta.append({
-                            "tipo": label,
-                            "file_name": filename,
-                            "bytes": len(data),
-                            "sha256": u.get("sha256"),
-                            "storage_path": u.get("storage_path"),
-                        })
-
-                    smtp_send_email_ssl(
-                        host=(cfg.get("smtp_host") or "").strip(),
-                        port=int(cfg.get("smtp_port") or DEFAULT_SMTP_PORT),
-                        user=(cfg.get("smtp_user") or "").strip(),
-                        password=(cfg.get("smtp_pass") or "").strip(),
-                        from_name=(cfg.get("from_name") or "ContactBot").strip(),
-                        from_email=(cfg.get("from_email") or cfg.get("smtp_user") or "").strip(),
-                        to_email=to_email.strip(),
-                        subject=assunto_prev,
-                        body=corpo_prev,
-                        attachments=attachments,
-                    )
-
-                    db_insert_email_log({
-                        "status": "sent",
-                        "cliente_id": cliente["id"],
-                        "remessa_id": rem["id"],
-                        "to_email": to_email.strip(),
-                        "subject": assunto_prev,
-                        "body_preview": (corpo_prev or "")[:4000],
-                        "attachments_json": json.dumps(attach_meta, ensure_ascii=False),
-                        "user_email": user_email,
-                        "started_at": started,
-                        "finished_at": datetime.now(timezone.utc).isoformat(),
-                    })
-
-                    st.success("✅ E-mail enviado e auditado.")
-                    st.rerun()
-
-                except Exception as e:
+            else:
+                
+                rems = _resp_data(db_list_remessas(cliente_id=cliente["id"], limit=400)) or []
+                if not rems:
+                    st.warning("Crie uma remessa primeiro.")
+                    st.stop()
+                
+                map_label_to_rem = {f'{remessa_get_key(r)} (nº {remessa_get_numero(r)})': r for r in rems}
+                rem_label = st.selectbox("Remessa", list(map_label_to_rem.keys()), key="mail_rem")
+                rem = map_label_to_rem[rem_label]
+                
+                go2 = confirm_block("Confirmar remessa", "Clique para carregar anexos e liberar o envio.", "Carregar remessa", "mail_go2")
+                if not go2:
+                    st.info("Clique em **Carregar remessa**.")
+                    st.stop()
+                
+                ups = _resp_data(db_list_uploads(remessa_id=rem["id"], limit=200)) or []
+                env_u = next((u for u in ups if u.get("file_tipo") == "envios"), None)
+                bot_u = next((u for u in ups if u.get("file_tipo") == "botoes"), None)
+                
+                cA, cB, cC = st.columns([1, 1, 2])
+                with cA:
+                    st.markdown(f"<span class='cb-pill'>Envios: {'OK' if env_u else 'Pendente'}</span>", unsafe_allow_html=True)
+                with cB:
+                    st.markdown(f"<span class='cb-pill'>Botões: {'OK' if bot_u else 'Pendente'}</span>", unsafe_allow_html=True)
+                with cC:
+                    st.markdown(f"<span class='cb-muted'>Destino padrão: <b>{cliente.get('contato_email') or cliente.get('email_principal') or '-'}</b></span>", unsafe_allow_html=True)
+                
+                email_cfg_rows = _resp_data(db_get_email_config())
+                if not email_cfg_rows or not bool(email_cfg_rows[0].get("is_active", False)):
+                    st.warning("Configure e ative o SMTP em **E-mail (SMTP)**.")
+                    st.stop()
+                
+                cfg = email_cfg_rows[0]
+                to_default = (cliente.get("contato_email") or cliente.get("email_principal") or "").strip()
+                to_email = st.text_input("E-mail de destino", value=to_default, key="mail_to")
+                
+                d = datetime.strptime(rem.get("data"), "%Y-%m-%d").date() if rem.get("data") else date.today()
+                subj_tpl = cfg.get("template_assunto") or "Relatório ContactBot — {cliente} — {mes}/{ano}"
+                body_tpl = cfg.get("template_corpo") or "Olá, segue o relatório.\n\nAtt,\nContactBot"
+                
+                assunto_prev = subj_tpl.format(cliente=cliente.get("razao_social", ""), mes=d.month, ano=d.year, remessa=remessa_get_key(rem))
+                corpo_prev = body_tpl.format(cliente=cliente.get("razao_social", ""), mes=d.month, ano=d.year, remessa=remessa_get_key(rem))
+                
+                st.text_input("Assunto (prévia)", value=assunto_prev, key="mail_subj")
+                st.text_area("Mensagem (prévia)", value=corpo_prev, height=120, key="mail_body")
+                
+                can_send = bool(env_u or bot_u) and bool(to_email.strip())
+                
+                if st.button("Enviar relatório desta remessa", type="primary", use_container_width=True, disabled=not can_send, key="mail_send"):
+                    started = datetime.now(timezone.utc).isoformat()
+                    attachments: List[Tuple[str, bytes, str]] = []
+                    attach_meta = []
+                
                     try:
+                        for u, label in [(env_u, "envios"), (bot_u, "botoes")]:
+                            if not u:
+                                continue
+                            url = storage_signed_url(UPLOADS_BUCKET, u.get("storage_path"), expires_in=3600)
+                            if not url:
+                                raise RuntimeError(f"Sem link assinado para {label}.")
+                            data = fetch_bytes_from_signed_url(url)
+                            filename = u.get("file_name") or f"{label}.csv"
+                            attachments.append((filename, data, "text/csv"))
+                            attach_meta.append({
+                                "tipo": label,
+                                "file_name": filename,
+                                "bytes": len(data),
+                                "sha256": u.get("sha256"),
+                                "storage_path": u.get("storage_path"),
+                            })
+                
+                        smtp_send_email_ssl(
+                            host=(cfg.get("smtp_host") or "").strip(),
+                            port=int(cfg.get("smtp_port") or DEFAULT_SMTP_PORT),
+                            user=(cfg.get("smtp_user") or "").strip(),
+                            password=(cfg.get("smtp_pass") or "").strip(),
+                            from_name=(cfg.get("from_name") or "ContactBot").strip(),
+                            from_email=(cfg.get("from_email") or cfg.get("smtp_user") or "").strip(),
+                            to_email=to_email.strip(),
+                            subject=assunto_prev,
+                            body=corpo_prev,
+                            attachments=attachments,
+                        )
+                
                         db_insert_email_log({
-                            "status": "error",
+                            "status": "sent",
                             "cliente_id": cliente["id"],
                             "remessa_id": rem["id"],
                             "to_email": to_email.strip(),
@@ -2190,47 +2168,65 @@ create table if not exists public.bases_arquivos (
                             "user_email": user_email,
                             "started_at": started,
                             "finished_at": datetime.now(timezone.utc).isoformat(),
-                            "error_message": str(e)[:4000],
                         })
-                    except Exception:
-                        pass
-                    st.error(f"Falha no envio: {e}")
-
-            st.divider()
-            st.write("#### Auditoria (histórico)")
-
-            logs = _resp_data(db_list_email_logs(cliente_id=cliente["id"], remessa_id=rem["id"], status=None, limit=300)) or []
-            existing_statuses = sorted(list({(l.get("status") or "").strip() for l in logs if (l.get("status") or "").strip()}))
-            options = ["Todos"] + (existing_statuses if existing_statuses else ["sent", "error"])
-
-            f1, f2 = st.columns([1, 1])
-            with f1:
-                status_filter = st.selectbox("Status", options, index=0, key="mail_log_status")
-            with f2:
-                limit = st.number_input("Quantidade", min_value=50, max_value=500, value=200, step=50, key="mail_log_limit")
-
-            logs2 = _resp_data(db_list_email_logs(cliente_id=cliente["id"], remessa_id=rem["id"], status=status_filter, limit=int(limit))) or []
-            if not logs2:
-                st.info("Nenhum registro encontrado para este filtro.")
-            else:
-                out = []
-                for l in logs2:
-                    try:
-                        attaches = json.loads(l.get("attachments_json") or "[]")
-                        attach_txt = ", ".join([f"{a.get('tipo')}({fmt_int(a.get('bytes'))}b)" for a in attaches]) if attaches else "-"
-                    except Exception:
-                        attach_txt = "-"
-                    out.append({
-                        "quando": l.get("created_at") or l.get("finished_at") or "",
-                        "status": l.get("status"),
-                        "destino": l.get("to_email"),
-                        "assunto": l.get("subject"),
-                        "anexos": attach_txt,
-                        "usuário": l.get("user_email") or "",
-                        "erro": (l.get("error_message") or "")[:180] if l.get("status") == "error" else "",
-                    })
-                st.dataframe(out, use_container_width=True)
-
+                
+                        st.success("✅ E-mail enviado e auditado.")
+                        st.rerun()
+                
+                    except Exception as e:
+                        try:
+                            db_insert_email_log({
+                                "status": "error",
+                                "cliente_id": cliente["id"],
+                                "remessa_id": rem["id"],
+                                "to_email": to_email.strip(),
+                                "subject": assunto_prev,
+                                "body_preview": (corpo_prev or "")[:4000],
+                                "attachments_json": json.dumps(attach_meta, ensure_ascii=False),
+                                "user_email": user_email,
+                                "started_at": started,
+                                "finished_at": datetime.now(timezone.utc).isoformat(),
+                                "error_message": str(e)[:4000],
+                            })
+                        except Exception:
+                            pass
+                        st.error(f"Falha no envio: {e}")
+                
+                st.divider()
+                st.write("#### Auditoria (histórico)")
+                
+                logs = _resp_data(db_list_email_logs(cliente_id=cliente["id"], remessa_id=rem["id"], status=None, limit=300)) or []
+                existing_statuses = sorted(list({(l.get("status") or "").strip() for l in logs if (l.get("status") or "").strip()}))
+                options = ["Todos"] + (existing_statuses if existing_statuses else ["sent", "error"])
+                
+                f1, f2 = st.columns([1, 1])
+                with f1:
+                    status_filter = st.selectbox("Status", options, index=0, key="mail_log_status")
+                with f2:
+                    limit = st.number_input("Quantidade", min_value=50, max_value=500, value=200, step=50, key="mail_log_limit")
+                
+                logs2 = _resp_data(db_list_email_logs(cliente_id=cliente["id"], remessa_id=rem["id"], status=status_filter, limit=int(limit))) or []
+                if not logs2:
+                    st.info("Nenhum registro encontrado para este filtro.")
+                else:
+                    out = []
+                    for l in logs2:
+                        try:
+                            attaches = json.loads(l.get("attachments_json") or "[]")
+                            attach_txt = ", ".join([f"{a.get('tipo')}({fmt_int(a.get('bytes'))}b)" for a in attaches]) if attaches else "-"
+                        except Exception:
+                            attach_txt = "-"
+                        out.append({
+                            "quando": l.get("created_at") or l.get("finished_at") or "",
+                            "status": l.get("status"),
+                            "destino": l.get("to_email"),
+                            "assunto": l.get("subject"),
+                            "anexos": attach_txt,
+                            "usuário": l.get("user_email") or "",
+                            "erro": (l.get("error_message") or "")[:180] if l.get("status") == "error" else "",
+                        })
+                    st.dataframe(out, use_container_width=True)
+                
         # ---- Usuários (Clientes)
         with sec[5]:
             st.write("### Usuários (Clientes)")
