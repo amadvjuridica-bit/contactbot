@@ -1346,27 +1346,18 @@ if session_is_logged_in():
                     admin_ok = False
 
                     subject_admin = f"Nova base disponível — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
-                    body_admin = (
-                        f"Admin,
+                    body_admin = f"""Admin,
 
-"
-                        f"O cliente enviou uma base e ela está disponível no painel.
+O cliente enviou uma base e ela está disponível no painel.
 
-"
-                        f"Cliente: {cliente.get('razao_social','')}
-"
-                        f"Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}
-"
-                        f"Arquivos: {', '.join(saved)}
-"
-                        f"Usuário: {user_email}
-"
-                        f"Observação: {notes or '-'}
+Cliente: {cliente.get('razao_social','')}
+Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}
+Arquivos: {', '.join(saved)}
+Usuário: {user_email}
+Observação: {notes or '-'}
 
-"
-                        f"ContactBot
-"
-                    )
+ContactBot
+"""
 
                     ok2, _ = send_notification_email(ADMIN_EMAIL, subject_admin, body_admin)
                     admin_ok = ok2
