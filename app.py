@@ -299,8 +299,22 @@ def admin_find_user_by_email(email: str):
         page += 1
     return None
 
-def admin_create_user(email: str, password: str):
-    return supabase_admin.auth.admin.create_user({"email": email.strip(), "password": password.strip(), "email_confirm": True})
+def admin_create_user(email: str, password: str, email_confirm: bool = True):
+    """Cria usuário no Supabase Auth (Admin API).
+
+    Importante: o SDK do Supabase pode variar e alguns campos podem não
+    existir em todas as versões. Por isso, tentamos criar com `email_confirm`
+    e, se não for aceito, fazemos fallback sem esse campo.
+    """
+    payload = {"email": (email or "").strip().lower(), "password": (password or "").strip()}
+    if email_confirm:
+        payload["email_confirm"] = True
+    try:
+        return supabase_admin.auth.admin.create_user(payload)
+    except Exception:
+        # Fallback: algumas versões não aceitam `email_confirm`
+        payload.pop("email_confirm", None)
+        return supabase_admin.auth.admin.create_user(payload)
 
 def admin_set_password(email: str, new_password: str, *, create_if_missing: bool = True):
     """Define senha de um usuário no Supabase Auth.
@@ -317,7 +331,7 @@ def admin_set_password(email: str, new_password: str, *, create_if_missing: bool
     if not u:
         if not create_if_missing:
             raise ValueError("Não achei esse e-mail no Supabase Auth > Users.")
-        created = admin_create_user(email, pwd, True)
+            created = admin_create_user(email, pwd, email_confirm=True)
         u = created.user if hasattr(created, "user") else (created.get("user") if isinstance(created, dict) else None)
         if not u:
             u = admin_find_user_by_email(email)
@@ -2272,7 +2286,7 @@ create table if not exists public.bases_arquivos (
                                 st.warning("As senhas não batem.")
                                 st.stop()
 
-                            admin_create_user(u_email, u_pass1)
+                            admin_create_user(u_email, u_pass1, email_confirm=True)
                             u_found = admin_find_user_by_email(u_email)
                             uid = (u_found or {}).get("id") if u_found else None
 
