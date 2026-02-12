@@ -317,7 +317,7 @@ def admin_set_password(email: str, new_password: str, *, create_if_missing: bool
     if not u:
         if not create_if_missing:
             raise ValueError("Não achei esse e-mail no Supabase Auth > Users.")
-        created = admin_create_user(email=email, password=pwd, email_confirm=True)
+        created = admin_create_user(email, pwd, True)
         u = created.user if hasattr(created, "user") else (created.get("user") if isinstance(created, dict) else None)
         if not u:
             u = admin_find_user_by_email(email)
@@ -810,7 +810,7 @@ def status_percent_block(by_status: Dict[str, int], total_rows: int):
 
 def confirm_block(title: str, help_text: str, button_label: str, key: str) -> bool:
     st.markdown(f"<div class='cb-action'><b>{title}</b><div class='cb-help'>{help_text}</div></div>", unsafe_allow_html=True)
-    return st.button(button_label, use_container_width=True, key=key)
+    return st.button(button_label, width='stretch', key=key)
 
 # ============================================================
 # HEADER
@@ -854,7 +854,7 @@ if session_is_logged_in():
         st.subheader("✅ Painel")
         st.caption(f"Usuário: {user_email} | ID: {user_id}")
     with top_r:
-        if st.button("Sair", use_container_width=True):
+        if st.button("Sair", width='stretch'):
             do_logout()
 
     st.divider()
@@ -976,7 +976,7 @@ if session_is_logged_in():
                         "cobráveis": fmt_int(x["cobráveis"]),
                         "unitário": fmt_money(x["unit"]),
                         "total": fmt_money(x["total"]),
-                    } for x in rows_month], use_container_width=True)
+                    } for x in rows_month], width='stretch')
                 
         # ============================================================
         # CLIENTE — Relatórios
@@ -1050,7 +1050,7 @@ if session_is_logged_in():
                                 data=data,
                                 file_name=env_u.get("file_name") or "envios.csv",
                                 mime="text/csv",
-                                use_container_width=True
+                                width='stretch'
                             )
                         else:
                             st.warning("Não foi possível gerar link para Envios.")
@@ -1066,7 +1066,7 @@ if session_is_logged_in():
                                 data=data,
                                 file_name=bot_u.get("file_name") or "botoes.csv",
                                 mime="text/csv",
-                                use_container_width=True
+                                width='stretch'
                             )
                         else:
                             st.warning("Não foi possível gerar link para Botões.")
@@ -1239,7 +1239,7 @@ if session_is_logged_in():
                     "cobráveis": fmt_int(x["cobráveis"]),
                     "unitário": fmt_money(x["unit"]),
                     "total": fmt_money(x["total"])
-                } for x in rows_out], use_container_width=True)
+                } for x in rows_out], width='stretch')
                 
         # ============================================================
         # CLIENTE — Bases para envio (NOVO)
@@ -1400,7 +1400,7 @@ ContactBot
                             "status": a.get("status"),
                             "criado_por": a.get("created_by_email"),
                             "obs": a.get("notes") or "",
-                        } for a in ags], use_container_width=True)
+                        } for a in ags], width='stretch')
                 except Exception as e:
                     st.warning(f"Não foi possível carregar histórico: {e}")
                 
@@ -1456,11 +1456,11 @@ ContactBot
                     headers, rows = parse_csv_preview(data, max_rows=20)
                     st.write("Colunas detectadas:", headers or "(sem cabeçalho)")
                     if rows:
-                        st.dataframe(rows, use_container_width=True)
+                        st.dataframe(rows, width='stretch')
                 except Exception as e:
                     st.warning(f"Preview falhou: {e}")
             
-                if st.button("Salvar arquivo", type="primary", use_container_width=True, key="up_save_adm"):
+                if st.button("Salvar arquivo", type="primary", width='stretch', key="up_save_adm"):
                     try:
                         rem_key = remessa_get_key(rem) or f"REM-{rem.get('id')}"
                         path = make_storage_path(cliente["slug"], rem_key, file_tipo, file_name)
@@ -1499,7 +1499,7 @@ ContactBot
                     "arquivo": u.get("file_name"),
                     "tamanho": fmt_int(u.get("size_bytes")),
                     "storage_path": u.get("storage_path"),
-                } for u in ups], use_container_width=True)
+                } for u in ups], width='stretch')
             
     # ============================================================
     # ADMIN — Campanhas (Remessas)
@@ -1526,7 +1526,7 @@ ContactBot
 
         observacao = st.text_input("Observação (opcional)", key="rem_obs_adm")
 
-        if st.button("Criar remessa", type="primary", use_container_width=True, key="rem_create_adm"):
+        if st.button("Criar remessa", type="primary", width='stretch', key="rem_create_adm"):
             try:
                 db_insert_remessa(cliente["id"], numero, data_rem, preview_key, observacao)
                 st.success("✅ Remessa criada.")
@@ -1550,7 +1550,7 @@ ContactBot
                     "número": remessa_get_numero(r),
                     "remessa": remessa_get_key(r),
                     "status": r.get("status"),
-                } for r in rems], use_container_width=True)
+                } for r in rems], width='stretch')
             
     # ============================================================
     # ADMIN — Relatórios
@@ -1612,7 +1612,7 @@ ContactBot
                     url = storage_signed_url(UPLOADS_BUCKET, env_u.get("storage_path"), expires_in=3600)
                     data = fetch_bytes_from_signed_url(url) if url else None
                     if data:
-                        st.download_button("Baixar Envios (CSV)", data=data, file_name=env_u.get("file_name") or "envios.csv", mime="text/csv", use_container_width=True)
+                        st.download_button("Baixar Envios (CSV)", data=data, file_name=env_u.get("file_name") or "envios.csv", mime="text/csv", width='stretch')
                     else:
                         st.warning("Sem link de envios.")
                 else:
@@ -1622,7 +1622,7 @@ ContactBot
                     url = storage_signed_url(UPLOADS_BUCKET, bot_u.get("storage_path"), expires_in=3600)
                     data = fetch_bytes_from_signed_url(url) if url else None
                     if data:
-                        st.download_button("Baixar Botões (CSV)", data=data, file_name=bot_u.get("file_name") or "botoes.csv", mime="text/csv", use_container_width=True)
+                        st.download_button("Baixar Botões (CSV)", data=data, file_name=bot_u.get("file_name") or "botoes.csv", mime="text/csv", width='stretch')
                     else:
                         st.warning("Sem link de botões.")
                 else:
@@ -1788,7 +1788,7 @@ ContactBot
                 "cobráveis": fmt_int(x["cobráveis"]),
                 "unitário": fmt_money(x["unit"]),
                 "total": fmt_money(x["total"])
-            } for x in rows_out], use_container_width=True)
+            } for x in rows_out], width='stretch')
             
     # ============================================================
     # ADMIN — Bases (Agendamentos)
@@ -1897,7 +1897,7 @@ create table if not exists public.bases_arquivos (
                     "tamanho": fmt_int(f.get("size_bytes")),
                     "sha256": (f.get("sha256") or "")[:12] + "...",
                     "storage": f.get("storage_path"),
-                } for f in files], use_container_width=True)
+                } for f in files], width='stretch')
             
                 st.write("#### Download (links assinados)")
                 for f in files[:50]:
@@ -1928,7 +1928,7 @@ create table if not exists public.bases_arquivos (
                 plano_label = st.selectbox("Plano", ["Pós-pago", "Pré-pago"], index=0, key="adm_plano")
                 plano_tipo = "pos" if plano_label == "Pós-pago" else "pre"
 
-                if st.button("Salvar cliente", type="primary", use_container_width=True, key="adm_save_cliente"):
+                if st.button("Salvar cliente", type="primary", width='stretch', key="adm_save_cliente"):
                     try:
                         if not (cnpj or "").strip():
                             st.warning("Informe o CNPJ.")
@@ -1957,7 +1957,7 @@ create table if not exists public.bases_arquivos (
                     "plano_tipo": c.get("plano_tipo"),
                     "contato_email": c.get("contato_email") or c.get("email_principal"),
                     "ativo": c.get("ativo"),
-                } for c in clientes], use_container_width=True)
+                } for c in clientes], width='stretch')
 
         # ---- Valores remuneração
         with sec[1]:
@@ -1975,7 +1975,7 @@ create table if not exists public.bases_arquivos (
 
                 if not rows:
                     st.warning("Sem faixas no banco.")
-                    if st.button(f"Criar faixas padrão ({plan_tipo.upper()})", key=f"seed_{plan_tipo}", use_container_width=True):
+                    if st.button(f"Criar faixas padrão ({plan_tipo.upper()})", key=f"seed_{plan_tipo}", width='stretch'):
                         seed = []
                         for mn, mx, pr in DEFAULT_TIERS[plan_tipo]:
                             seed.append({"plano_tipo": plan_tipo, "min_qty": int(mn), "max_qty": int(mx), "unit_price": float(pr), "ativo": True})
@@ -2002,7 +2002,7 @@ create table if not exists public.bases_arquivos (
                         with c4:
                             new_ativo = st.checkbox("Ativo", value=ativo, key=f"{plan_tipo}_at_{r['id']}")
 
-                        if st.button("Salvar", key=f"{plan_tipo}_save_{r['id']}", use_container_width=True):
+                        if st.button("Salvar", key=f"{plan_tipo}_save_{r['id']}", width='stretch'):
                             db_update_pricing_tier(r["id"], {"unit_price": float(new_price), "ativo": bool(new_ativo)})
                             st.success("✅ Salvo.")
                             st.rerun()
@@ -2031,7 +2031,7 @@ create table if not exists public.bases_arquivos (
             template_assunto = st.text_input("Template de assunto", value=row.get("template_assunto") or "Relatório ContactBot — {cliente} — {mes}/{ano}", key="em_subj")
             template_corpo = st.text_area("Template de mensagem", value=row.get("template_corpo") or "Olá, segue o relatório.\n\nAtt,\nContactBot", height=160, key="em_body")
 
-            if st.button("Salvar configurações de e-mail", use_container_width=True, key="em_save"):
+            if st.button("Salvar configurações de e-mail", width='stretch', key="em_save"):
                 db_upsert_email_config({
                     "is_active": bool(is_active),
                     "smtp_host": (smtp_host or "").strip() or None,
@@ -2057,7 +2057,7 @@ create table if not exists public.bases_arquivos (
             public_key = st.text_input("Public Key", value=row.get("public_key") or "", key="mp_pub")
             webhook_secret = st.text_input("Webhook Secret", value=row.get("webhook_secret") or "", type="password", key="mp_webhook")
 
-            if st.button("Salvar configurações Mercado Pago", use_container_width=True, key="mp_save"):
+            if st.button("Salvar configurações Mercado Pago", width='stretch', key="mp_save"):
                 db_upsert_mercadopago_config({
                     "is_active": bool(mp_active),
                     "access_token": (access_token or "").strip() or None,
@@ -2131,7 +2131,7 @@ create table if not exists public.bases_arquivos (
                 
                 can_send = bool(env_u or bot_u) and bool(to_email.strip())
                 
-                if st.button("Enviar relatório desta remessa", type="primary", use_container_width=True, disabled=not can_send, key="mail_send"):
+                if st.button("Enviar relatório desta remessa", type="primary", width='stretch', disabled=not can_send, key="mail_send"):
                     started = datetime.now(timezone.utc).isoformat()
                     attachments: List[Tuple[str, bytes, str]] = []
                     attach_meta = []
@@ -2235,7 +2235,7 @@ create table if not exists public.bases_arquivos (
                             "usuário": l.get("user_email") or "",
                             "erro": (l.get("error_message") or "")[:180] if l.get("status") == "error" else "",
                         })
-                    st.dataframe(out, use_container_width=True)
+                    st.dataframe(out, width='stretch')
                 
         # ---- Usuários (Clientes)
         with sec[5]:
@@ -2260,7 +2260,7 @@ create table if not exists public.bases_arquivos (
 
                 colb1, colb2 = st.columns(2)
                 with colb1:
-                    if st.button("Criar usuário + Vincular", use_container_width=True, key="u_create_link"):
+                    if st.button("Criar usuário + Vincular", width='stretch', key="u_create_link"):
                         try:
                             if not u_email.strip():
                                 st.warning("Informe o e-mail.")
@@ -2284,7 +2284,7 @@ create table if not exists public.bases_arquivos (
                             st.error(f"Erro ao criar/vincular: {e}")
 
                 with colb2:
-                    if st.button("Apenas resetar senha", use_container_width=True, key="u_reset"):
+                    if st.button("Apenas resetar senha", width='stretch', key="u_reset"):
                         try:
                             if not u_email.strip():
                                 st.warning("Informe o e-mail.")
@@ -2296,7 +2296,7 @@ create table if not exists public.bases_arquivos (
                                 st.warning("As senhas não batem.")
                                 st.stop()
 
-                            user_obj, action = admin_set_password(u_email, u_pass1, create_if_missing=True)
+                            user_obj, action = admin_set_password(u_email, u_pass1, create_if_missing=False)
                             try:
                                 uid = (user_obj or {}).get("id")
                                 if uid:
@@ -2321,7 +2321,7 @@ create table if not exists public.bases_arquivos (
                         "role": r.get("role"),
                         "ativo": r.get("ativo"),
                         "user_id": r.get("user_id"),
-                    } for r in rows], use_container_width=True)
+                    } for r in rows], width='stretch')
             except Exception:
                 st.error("A tabela client_users não foi encontrada (rode o SQL do client_users).")
 
@@ -2339,7 +2339,7 @@ with col_left:
     login_email = st.text_input("E-mail", value="", placeholder="seuemail@dominio.com")
     login_pass = st.text_input("Senha", value="", type="password", placeholder="Digite sua senha")
 
-    if st.button("Entrar", type="primary", use_container_width=True):
+    if st.button("Entrar", type="primary", width='stretch'):
         try:
             resp = do_login(login_email, login_pass)
             ok = session_set_from_auth_response(resp)
