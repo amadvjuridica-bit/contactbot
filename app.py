@@ -302,12 +302,31 @@ def admin_find_user_by_email(email: str):
 def admin_create_user(email: str, password: str):
     return supabase_admin.auth.admin.create_user({"email": email.strip(), "password": password.strip(), "email_confirm": True})
 
-def admin_set_password(email: str, new_password: str):
+def admin_set_password(email: str, new_password: str, *, create_if_missing: bool = True):
+    """Define senha de um usuário no Supabase Auth.
+    Se o usuário não existir e create_if_missing=True, cria o usuário (email confirmado) e define a senha.
+    Retorna (user_dict, action) onde action ∈ {'updated','created'}.
+    """
+    email = (email or "").strip().lower()
+    pwd = (new_password or "").strip()
+    if not email:
+        raise ValueError("Informe o e-mail do usuário.")
+    if not pwd:
+        raise ValueError("Informe a nova senha.")
     u = admin_find_user_by_email(email)
     if not u:
-        raise ValueError("Não achei esse e-mail no Supabase Auth > Users.")
+        if not create_if_missing:
+            raise ValueError("Não achei esse e-mail no Supabase Auth > Users.")
+        created = admin_create_user(email=email, password=pwd, email_confirm=True)
+        u = created.user if hasattr(created, "user") else (created.get("user") if isinstance(created, dict) else None)
+        if not u:
+            u = admin_find_user_by_email(email)
+        if not u:
+            raise ValueError("Falha ao criar o usuário no Supabase Auth.")
+        return u, "created"
     uid = u.get("id")
-    return supabase_admin.auth.admin.update_user_by_id(uid, {"password": new_password.strip()})
+    supabase_admin.auth.admin.update_user_by_id(uid, {"password": pwd})
+    return u, "updated"
 
 def do_login(email: str, password: str):
     return supabase_public.auth.sign_in_with_password({"email": email.strip(), "password": password.strip()})
@@ -2277,8 +2296,15 @@ create table if not exists public.bases_arquivos (
                                 st.warning("As senhas não batem.")
                                 st.stop()
 
-                            admin_set_password(u_email, u_pass1)
-                            st.success("✅ Senha atualizada.")
+                            user_obj, action = admin_set_password(u_email, u_pass1, create_if_missing=True)
+                            try:
+                                uid = (user_obj or {}).get("id")
+                                if uid:
+                                    db_upsert_client_user(cliente_id, u_email, uid, u_role, bool(u_active))
+                            except Exception:
+                                pass
+
+                            st.success("✅ Usuário criado no Auth e senha definida." if action == "created" else "✅ Senha atualizada.")
                         except Exception as e:
                             st.error(f"Erro ao resetar senha: {e}")
 
