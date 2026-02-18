@@ -244,56 +244,7 @@ supabase_public, supabase_admin = get_clients()
 # SESSÃO (página única)
 # ============================================================
 def session_is_logged_in() -> bool:
-    # Logged in only if we have a token and a minimally valid user payload.
-    token_ok = bool((st.session_state.get("access_token") or "").strip())
-    u = st.session_state.get("user") or {}
-    user_ok = bool((u.get("email") or "").strip()) and bool((u.get("id") or "").strip())
-    return token_ok and user_ok
-
-
-def session_clear():
-    for k in ["access_token", "refresh_token", "user"]:
-        st.session_state.pop(k, None)
-
-
-def session_validate_or_clear() -> bool:
-    """Validate the cached session token against Supabase.
-
-    Prevents the app from getting stuck showing a blank screen when the
-    Streamlit session cached an old token/user and the auth session is no
-    longer valid.
-    """
-    token = (st.session_state.get("access_token") or "").strip()
-    if not token:
-        session_clear()
-        return False
-    try:
-        gu = getattr(supabase_public.auth, "get_user", None)
-        if callable(gu):
-            try:
-                resp = gu(token)
-            except TypeError:
-                resp = gu()
-            user_obj = getattr(resp, "user", None) if resp is not None else None
-            if user_obj is None and isinstance(resp, dict):
-                user_obj = resp.get("user")
-            email = None
-            uid = None
-            if isinstance(user_obj, dict):
-                email = user_obj.get("email")
-                uid = user_obj.get("id")
-            else:
-                email = getattr(user_obj, "email", None)
-                uid = getattr(user_obj, "id", None)
-            if not (email and uid):
-                session_clear()
-                return False
-            st.session_state["user"] = {"email": (email or "").strip(), "id": (uid or "").strip()}
-            return True
-    except Exception:
-        session_clear()
-        return False
-    return session_is_logged_in()
+    return bool(st.session_state.get("access_token")) and bool(st.session_state.get("user"))
 
 def session_set_from_auth_response(resp):
     session = getattr(resp, "session", None) or (resp.get("session") if isinstance(resp, dict) else None)
@@ -333,6 +284,18 @@ def admin_find_user_by_email(email: str):
     email = (email or "").strip().lower()
     if not email:
         return None
+
+    def _u_get(u: Any, k: str):
+        """Compat: supabase-py pode retornar dict OU objeto."""
+        if isinstance(u, dict):
+            return u.get(k)
+        if hasattr(u, "model_dump"):
+            try:
+                return u.model_dump().get(k)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        return getattr(u, k, None)
+
     page = 1
     per_page = 200
     for _ in range(20):
@@ -343,8 +306,23 @@ def admin_find_user_by_email(email: str):
         if not users:
             return None
         for u in users:
-            if (u.get("email") or "").strip().lower() == email:
-                return u
+            u_email = (_u_get(u, "email") or "").strip().lower()
+            if u_email == email:
+                if isinstance(u, dict):
+                    return u
+                if hasattr(u, "model_dump"):
+                    try:
+                        return u.model_dump()  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                return {
+                    "id": _u_get(u, "id"),
+                    "email": _u_get(u, "email"),
+                    "created_at": _u_get(u, "created_at"),
+                    "last_sign_in_at": _u_get(u, "last_sign_in_at"),
+                    "user_metadata": _u_get(u, "user_metadata"),
+                    "app_metadata": _u_get(u, "app_metadata"),
+                }
         page += 1
     return None
 
@@ -356,7 +334,21 @@ def admin_set_password(email: str, new_password: str):
     if not u:
         raise ValueError("Não achei esse e-mail no Supabase Auth > Users.")
     uid = u.get("id")
+    if not uid:
+        raise ValueError("User ID não encontrado para esse e-mail.")
     return supabase_admin.auth.admin.update_user_by_id(uid, {"password": new_password.strip()})
+
+
+def admin_delete_user_by_email(email: str) -> bool:
+    """Exclui do Supabase Auth (se existir)."""
+    u = admin_find_user_by_email(email)
+    if not u:
+        return False
+    uid = u.get("id")
+    if not uid:
+        return False
+    supabase_admin.auth.admin.delete_user(uid)
+    return True
 
 def do_login(email: str, password: str):
     return supabase_public.auth.sign_in_with_password({"email": email.strip(), "password": password.strip()})
@@ -594,6 +586,18 @@ def db_upsert_client_user(cliente_id: str, user_email: str, user_id: Optional[st
         row_id = existing[0]["id"]
         return supabase_admin.table("client_users").update(payload).eq("id", row_id).execute()
     return supabase_admin.table("client_users").insert(payload).execute()
+
+
+def db_delete_client_user_by_email(cliente_id: str, user_email: str):
+    """Remove o vínculo do usuário (tabela client_users) para um cliente específico."""
+    email_norm = (user_email or "").strip().lower()
+    return (
+        supabase_admin.table("client_users")
+        .delete()
+        .eq("cliente_id", cliente_id)
+        .ilike("user_email", email_norm)
+        .execute()
+    )
 
 def db_get_access_cliente_ids_for_user(user_email: str) -> List[str]:
     email_norm = (user_email or "").strip().lower()
@@ -865,8 +869,7 @@ with st.expander("Diagnóstico rápido (config)"):
 # ============================================================
 # PAINEL (LOGADO)
 # ============================================================
-# Valida o token (evita "tela em branco" por sessão antiga no Streamlit)
-if session_validate_or_clear() and session_is_logged_in():
+if session_is_logged_in():
     user = st.session_state.get("user", {}) or {}
     user_email = (user.get("email") or "").strip()
     user_id = (user.get("id") or "").strip()
@@ -1396,18 +1399,27 @@ if session_validate_or_clear() and session_is_logged_in():
                     admin_ok = False
 
                     subject_admin = f"Nova base disponível — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
-                    body_admin = f"""Admin,
+                    body_admin = (
+                        f"Admin,
 
-Cliente: {cliente.get('nome')} ({cliente.get('slug')})
-Arquivo(s): {', '.join(saved_names)}
-Agendado para: {dt_sched.strftime('%d/%m/%Y %H:%M')}
+"
+                        f"O cliente enviou uma base e ela está disponível no painel.
 
-Status: agendado
-Usuário: {user_email}
-Observação: {notes or '-'}
+"
+                        f"Cliente: {cliente.get('razao_social','')}
+"
+                        f"Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}
+"
+                        f"Arquivos: {', '.join(saved)}
+"
+                        f"Usuário: {user_email}
+"
+                        f"Observação: {notes or '-'}
 
-ContactBot
-"""
+"
+                        f"ContactBot
+"
+                    )
 
                     ok2, _ = send_notification_email(ADMIN_EMAIL, subject_admin, body_admin)
                     admin_ok = ok2
@@ -2303,19 +2315,28 @@ create table if not exists public.bases_arquivos (
                                 st.warning("As senhas não batem.")
                                 st.stop()
 
-                            # Se já existir no Auth, apenas redefine a senha.
-                            u_found = admin_find_user_by_email(u_email)
-                            if u_found and u_found.get("id"):
-                                admin_set_password(u_email, u_pass1)
-                                uid = u_found.get("id")
-                            else:
+                            # 1) cria no Auth (se já existir, seguimos para vincular)
+                            try:
                                 admin_create_user(u_email, u_pass1)
-                                u_found2 = admin_find_user_by_email(u_email)
-                                uid = (u_found2 or {}).get("id") if u_found2 else None
+                            except Exception as e_create:
+                                msg = str(e_create).lower()
+                                if "already" not in msg and "registered" not in msg:
+                                    raise
 
+                            # 2) captura o ID no Auth (normalizado)
+                            u_found = admin_find_user_by_email(u_email)
+                            uid = (u_found or {}).get("id") if u_found else None
+
+                            # 3) vincula / atualiza o vínculo (sempre tenta gravar user_id)
                             db_upsert_client_user(cliente_id=cliente["id"], user_email=u_email, user_id=uid, role=u_role, ativo=u_active)
 
-                            st.success("✅ Usuário configurado e vinculado ao cliente.")
+                            if uid:
+                                st.success("✅ Usuário vinculado com sucesso.")
+                            else:
+                                st.warning(
+                                    "✅ Vínculo criado, mas não consegui ler o user_id do Auth agora. "
+                                    "Isso pode impedir reset de senha neste momento. Aguarde alguns segundos e tente de novo."
+                                )
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao criar/vincular: {e}")
@@ -2333,14 +2354,29 @@ create table if not exists public.bases_arquivos (
                                 st.warning("As senhas não batem.")
                                 st.stop()
 
-                            u_found = admin_find_user_by_email(u_email)
-                            if not (u_found and u_found.get("id")):
-                                st.warning("Esse e-mail ainda não existe no Supabase Auth → Users. Use 'Criar usuário + Vincular'.")
-                            else:
-                                admin_set_password(u_email, u_pass1)
-                                st.success("✅ Senha atualizada.")
+                            admin_set_password(u_email, u_pass1)
+                            st.success("✅ Senha atualizada.")
                         except Exception as e:
                             st.error(f"Erro ao resetar senha: {e}")
+
+                st.divider()
+                st.markdown("#### Revogar acesso")
+                st.caption("Exclui o vínculo do cliente e, se marcado, também remove o usuário do Supabase Auth.")
+                d1, d2, d3 = st.columns([2, 1, 1])
+                with d1:
+                    del_email = st.text_input("E-mail para excluir", value=u_email, key="u_del_email")
+                with d2:
+                    del_auth = st.checkbox("Excluir também no Auth", value=False, key="u_del_auth")
+                with d3:
+                    if st.button("Excluir", use_container_width=True, key="u_del_btn"):
+                        try:
+                            db_delete_client_user_by_email(cliente_id=cliente["id"], user_email=del_email)
+                            if del_auth:
+                                admin_delete_user_by_email(del_email)
+                            st.success("✅ Acesso removido.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao excluir: {e}")
 
             st.divider()
             st.write("#### Acessos vinculados ao cliente")
