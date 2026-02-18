@@ -3,6 +3,7 @@ import io
 import csv
 import re
 import json
+import textwrap
 import hashlib
 import smtplib
 from email.message import EmailMessage
@@ -280,10 +281,38 @@ def is_admin_user() -> bool:
 # ============================================================
 # AUTH / ADMIN (mantido)
 # ============================================================
+def _obj_get(o, key, default=None):
+    if o is None:
+        return default
+    if isinstance(o, dict):
+        return o.get(key, default)
+    return getattr(o, key, default)
+
 def admin_find_user_by_email(email: str):
     email = (email or "").strip().lower()
     if not email:
         return None
+
+    page = 1
+    per_page = 200
+
+    # list_users retorna objetos (User) em algumas versões do SDK
+    for _ in range(50):
+        resp = supabase_admin.auth.admin.list_users(page=page, per_page=per_page)
+        users = _obj_get(resp, "users", None)
+        if users is None and isinstance(resp, dict):
+            users = resp.get("users", [])
+        if not users:
+            return None
+
+        for u in users:
+            u_email = (_obj_get(u, "email", "") or "").strip().lower()
+            if u_email == email:
+                # Normaliza para dict simples (evita .get em objeto)
+                return {"id": _obj_get(u, "id"), "email": _obj_get(u, "email")}
+        page += 1
+
+    return None
 
     def _u_get(u: Any, k: str):
         """Compat: supabase-py pode retornar dict OU objeto."""
@@ -1399,27 +1428,18 @@ if session_is_logged_in():
                     admin_ok = False
 
                     subject_admin = f"Nova base disponível — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
-                    body_admin = (
-                        f"Admin,
+                    body_admin = textwrap.dedent(f"""\
+Admin,
 
-"
-                        f"O cliente enviou uma base e ela está disponível no painel.
+O cliente enviou uma base e ela está disponível no painel.
 
-"
-                        f"Cliente: {cliente.get('razao_social','')}
-"
-                        f"Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}
-"
-                        f"Arquivos: {', '.join(saved)}
-"
-                        f"Usuário: {user_email}
-"
-                        f"Observação: {notes or '-'}
+Cliente: {cliente.get('razao_social') or cliente.get('nome') or cliente.get('slug') or '-'}
+CNPJ: {cliente.get('cnpj') or '-'}
+Arquivo: {filename}
+Agendado para: {agendamento_dt_str}
 
-"
-                        f"ContactBot
-"
-                    )
+Acesse o painel para processar e disparar.
+""")
 
                     ok2, _ = send_notification_email(ADMIN_EMAIL, subject_admin, body_admin)
                     admin_ok = ok2
