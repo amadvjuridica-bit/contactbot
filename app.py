@@ -228,7 +228,9 @@ def ensure_env_or_stop():
         st.error(f"Faltando config: {', '.join(missing)}")
         st.info("Local: crie um arquivo .env na mesma pasta do app.py e reinicie o Streamlit.")
         st.info("Streamlit Cloud: Manage app → Settings → Secrets (TOML).")
-        st.stop()
+    # IMPORTANTE: este stop deve ocorrer **somente** quando o usuário está logado.
+    # Quando não está logado, precisamos seguir e renderizar o formulário de login.
+    st.stop()
 
 ensure_env_or_stop()
 
@@ -278,85 +280,39 @@ def is_admin_user() -> bool:
     return email == ADMIN_EMAIL.lower()
 
 # ============================================================
-# AUTH / ADMIN
+# AUTH / ADMIN (mantido)
 # ============================================================
-def _extract_user_id(resp):
-    # supabase-py pode retornar objeto ou dict
-    if resp is None:
-        return None
-    # objeto com atributo user
-    user = getattr(resp, 'user', None)
-    if user is not None:
-        if isinstance(user, dict):
-            return user.get('id')
-        return getattr(user, 'id', None)
-    if isinstance(resp, dict):
-        u = resp.get('user') or resp.get('data')
-        if isinstance(u, dict):
-            return u.get('id')
-    return None
-
 def admin_find_user_by_email(email: str):
-    email = (email or '').strip().lower()
+    email = (email or "").strip().lower()
     if not email:
         return None
     page = 1
     per_page = 200
-    # busca paginada (limite seguro)
-    for _ in range(30):
+    for _ in range(20):
         resp = supabase_admin.auth.admin.list_users(page=page, per_page=per_page)
-        users = getattr(resp, 'users', None)
+        users = getattr(resp, "users", None)
         if users is None and isinstance(resp, dict):
-            users = resp.get('users', [])
+            users = resp.get("users", [])
         if not users:
             return None
         for u in users:
-            if (u.get('email') or '').strip().lower() == email:
+            if (u.get("email") or "").strip().lower() == email:
                 return u
         page += 1
     return None
 
 def admin_create_user(email: str, password: str):
-    # Cria usuário no Supabase Auth (sem convite), já confirmado
-    payload = {
-        'email': (email or '').strip(),
-        'password': (password or '').strip(),
-        'email_confirm': True,
-    }
-    return supabase_admin.auth.admin.create_user(payload)
-
-def ensure_auth_user(email: str, password: str):
-    """Garante que o usuário exista no Auth.
-    Se não existir, cria. Se existir, atualiza a senha.
-    Retorna (user_id, created_bool)."""
-    email = (email or '').strip().lower()
-    if not email:
-        raise ValueError('E-mail inválido.')
-    u = admin_find_user_by_email(email)
-    if u:
-        uid = u.get('id')
-        # atualiza senha
-        if password:
-            supabase_admin.auth.admin.update_user_by_id(uid, {'password': password.strip()})
-        return uid, False
-    # cria
-    resp = admin_create_user(email, password)
-    uid = _extract_user_id(resp)
-    if not uid:
-        # fallback: tenta buscar novamente
-        u2 = admin_find_user_by_email(email)
-        uid = u2.get('id') if u2 else None
-    if not uid:
-        raise RuntimeError('Falha ao criar usuário no Supabase Auth.')
-    return uid, True
+    return supabase_admin.auth.admin.create_user({"email": email.strip(), "password": password.strip(), "email_confirm": True})
 
 def admin_set_password(email: str, new_password: str):
-    # Reset/definição de senha pelo admin.
-    uid, _ = ensure_auth_user(email, new_password)
-    return supabase_admin.auth.admin.update_user_by_id(uid, {'password': new_password.strip()})
+    u = admin_find_user_by_email(email)
+    if not u:
+        raise ValueError("Não achei esse e-mail no Supabase Auth > Users.")
+    uid = u.get("id")
+    return supabase_admin.auth.admin.update_user_by_id(uid, {"password": new_password.strip()})
 
 def do_login(email: str, password: str):
-    return supabase_public.auth.sign_in_with_password({'email': email.strip(), 'password': password.strip()})
+    return supabase_public.auth.sign_in_with_password({"email": email.strip(), "password": password.strip()})
 
 # ============================================================
 # UTILS
@@ -1391,15 +1347,21 @@ if session_is_logged_in():
                     # O cliente será notificado quando o status do agendamento for marcado como **Concluído** no painel admin.
                     admin_ok = False
 
-                    subject_admin = f"Nova base disponível — {cliente.get('razao_social','Cliente')} — {schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
+                    subject_admin = (
+                        f"Nova base disponível — {cliente.get('razao_social','Cliente')} — "
+                        f"{schedule_date.strftime('%d/%m/%Y')} {schedule_time_str}"
+                    )
                     body_admin = f"""Admin,
 
-Base enviada pelo cliente: {cliente_nome}
-Cliente ID: {cliente_id}
-Data/hora agendada: {ag_dt}
-Arquivo(s): {n_files} arquivo(s)
+O cliente enviou uma base e ela está disponível no painel.
 
-Acesse o painel para processar a base.
+Cliente: {cliente.get('razao_social','')}
+Agendamento: {schedule_date.strftime('%d/%m/%Y')} às {schedule_time_str}
+Arquivos: {', '.join(saved)}
+Usuário: {user_email}
+Observação: {notes or '-'}
+
+ContactBot
 """
 
                     ok2, _ = send_notification_email(ADMIN_EMAIL, subject_admin, body_admin)
@@ -2282,50 +2244,102 @@ create table if not exists public.bases_arquivos (
                 u_role = st.selectbox("Perfil", ["client", "admin"], index=0, key="u_role")
                 u_active = st.checkbox("Ativo", value=True, key="u_active")
 
+                    # Validação leve: mostra se o e-mail já existe no Supabase Auth (sem quebrar o fluxo)                    auth_user = None                    if u_email.strip():                        try:                            auth_user = admin_find_user_by_email(u_email.strip())                        except Exception:                            auth_user = None                    auth_exists = bool(auth_user and auth_user.get("id"))                    st.caption(                        f"Supabase Auth: {'✅ usuário encontrado' if auth_exists else '— usuário ainda não existe (use \"Criar usuário + Vincular\")'}."                    )
                 colb1, colb2 = st.columns(2)
                 with colb1:
-                    if st.button("Criar usuário + Vincular", use_container_width=True, key="admin_create_link"):
+                    if st.button("Criar usuário + Vincular", use_container_width=True, key="u_create_link"):
                         try:
-                            user_email = (u_email or "").strip().lower()
-                            if not user_email:
-                                st.error("Informe o e-mail do usuário.")
-                            elif u_pass1 != u_pass2:
-                                st.error("As senhas não conferem.")
-                            elif len(u_pass1 or "") < 6:
-                                st.error("A senha deve ter pelo menos 6 caracteres.")
-                            else:
-                                uid, created = ensure_auth_user(user_email, u_pass1)
-                                db_upsert_client_user(cliente["id"], user_email, u_role, u_active, uid)
-                                if created:
-                                    st.success("Usuário criado no Supabase Auth e vinculado ao cliente.")
-                                else:
-                                    st.success("Usuário já existia no Supabase Auth; senha atualizada e vínculo confirmado.")
+                            if not u_email.strip():
+                                st.warning("Informe o e-mail.")
+                                st.stop()
+                            if not u_pass1.strip() or not u_pass2.strip():
+                                st.warning("Informe a senha e confirme.")
+                                st.stop()
+                            if u_pass1 != u_pass2:
+                                st.warning("As senhas não batem.")
+                                st.stop()
+
+                            admin_create_user(u_email, u_pass1)
+                            u_found = admin_find_user_by_email(u_email)
+                            uid = (u_found or {}).get("id") if u_found else None
+
+                            db_upsert_client_user(cliente_id=cliente["id"], user_email=u_email, user_id=uid, role=u_role, ativo=u_active)
+
+                            st.success("✅ Usuário criado e vinculado ao cliente.")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao criar/vincular: {e}")
-                with colb2:
-                    if st.button("Apenas resetar senha", use_container_width=True, key="admin_reset_pass"):
-                        try:
-                            user_email = (u_email or "").strip().lower()
-                            if not user_email:
-                                st.error("Informe o e-mail do usuário.")
-                            elif u_pass1 != u_pass2:
-                                st.error("As senhas não conferem.")
-                            elif len(u_pass1 or "") < 6:
-                                st.error("Senha muito curta (mínimo 6 caracteres).")
-                            else:
-                                uid, created = ensure_auth_user(user_email, u_pass1)
-                                db_upsert_client_user(cliente["id"], user_email, u_role, u_active, uid)
-                                if created:
-                                    st.success("Usuário não existia no Supabase Auth; criado e senha definida.")
-                                else:
-                                    st.success("Senha atualizada com sucesso.")
-                        except Exception as e:
-                            st.error(f"Erro ao resetar senha: {e}")
-                try:
-                    rows = db_list_client_users(cliente["id"])
-                    if not rows:
-                        st.info("Nenhum acesso vinculado para este cliente.")
-                    else:
-                        st.dataframe(rows, width="stretch")
-                except Exception as e:
-                    st.error(f"Erro ao listar acessos vinculados: {e}")
+
+                    with colb2:
+                        if st.button(
+                            "Apenas resetar senha",
+                            use_container_width=True,
+                            key="u_reset",
+                            disabled=not auth_exists,
+                        ):
+                            try:
+                                if not u_email.strip():
+                                    st.warning("Informe o e-mail.")
+                                    st.stop()
+                                if not u_pass1.strip() or not u_pass2.strip():
+                                    st.warning("Informe a senha e confirme.")
+                                    st.stop()
+                                if u_pass1 != u_pass2:
+                                    st.warning("As senhas não batem.")
+                                    st.stop()
+
+                                admin_set_password(u_email, u_pass1)
+                                st.success("✅ Senha atualizada.")
+                            except Exception as e:
+                                st.error(f"Erro ao resetar senha: {e}")
+            st.divider()
+            st.write("#### Acessos vinculados ao cliente")
+            try:
+                rows = _resp_data(db_list_client_users(cliente_id=cliente["id"], limit=200)) or []
+                if not rows:
+                    st.info("Nenhum usuário vinculado ainda.")
+                else:
+                    st.dataframe([{
+                        "created_at": r.get("created_at"),
+                        "user_email": r.get("user_email"),
+                        "role": r.get("role"),
+                        "ativo": r.get("ativo"),
+                        "user_id": r.get("user_id"),
+                    } for r in rows], use_container_width=True)
+            except Exception:
+                st.error("A tabela client_users não foi encontrada (rode o SQL do client_users).")
+
+    # IMPORTANTE: parar aqui apenas para fluxo autenticado.
+    st.stop()
+
+# ============================================================
+# LOGIN (não logado)
+# ============================================================
+st.subheader("🔐 Login")
+
+col_left, col_right = st.columns([1.2, 1.0], gap="large")
+
+with col_left:
+    st.subheader("Entrar")
+    login_email = st.text_input("E-mail", value="", placeholder="seuemail@dominio.com")
+    login_pass = st.text_input("Senha", value="", type="password", placeholder="Digite sua senha")
+
+    if st.button("Entrar", type="primary", use_container_width=True):
+        try:
+            resp = do_login(login_email, login_pass)
+            ok = session_set_from_auth_response(resp)
+            if ok:
+                st.success("✅ Login OK!")
+                st.rerun()
+            else:
+                st.error("Login não retornou sessão.")
+        except Exception as e:
+            st.error(f"Login falhou: {e}")
+
+with col_right:
+    st.subheader("Acesso")
+    st.caption("As credenciais de empresas são criadas pelo administrador (controlado e seguro).")
+    st.info("Se você é cliente e ainda não tem acesso, solicite ao administrador.")
+
+st.divider()
+st.caption("Reset por e-mail permanece desativado neste app (decisão de segurança).")
